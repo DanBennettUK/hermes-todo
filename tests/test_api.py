@@ -5,7 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dashboard.plugin_api import TaskPatch, patch_task
+from pydantic import ValidationError
+
+from dashboard.plugin_api import TaskCreate, TaskPatch, patch_task
 import hermes_todo_store as store
 from hermes_todo_store import create_task, get_board
 
@@ -55,6 +57,20 @@ class HermesTodoApiContractTests(unittest.TestCase):
         self.assertEqual(task["dueDate"], "2026-08-04")
         self.assertIsNone(task["dueAt"])
         self.assertIsNone(task["dueTimezone"])
+
+    def test_api_models_do_not_coerce_boolean_or_text_numbers(self) -> None:
+        invalid_models = (
+            (TaskCreate, {"title": "Strict", "priority": True}),
+            (TaskCreate, {"title": "Strict", "priority": "2"}),
+            (TaskCreate, {"title": "Strict", "estimate": "25"}),
+            (TaskPatch, {"priority": True}),
+            (TaskPatch, {"priority": "2"}),
+            (TaskPatch, {"estimate": "25"}),
+        )
+        for model, payload in invalid_models:
+            with self.subTest(model=model.__name__, payload=payload):
+                with self.assertRaises(ValidationError):
+                    model(**payload)
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ router = APIRouter()
 
 
 class TaskCreate(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, strict=True)
 
     title: str = Field(min_length=1, max_length=500)
     estimate: int = Field(default=25, ge=5, le=480)
@@ -47,7 +47,7 @@ class TaskCreate(BaseModel):
 
 
 class TaskPatch(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, strict=True)
 
     title: str | None = Field(default=None, min_length=1, max_length=500)
     estimate: int | None = Field(default=None, ge=5, le=480)

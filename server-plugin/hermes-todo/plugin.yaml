@@ -1,5 +1,5 @@
 name: hermes-todo
-version: 0.1.0
+version: 0.1.1
 description: "Shared Todo board with independent plan, status, and due dates."
 author: "Hermes Todo contributors"
 kind: standalone
