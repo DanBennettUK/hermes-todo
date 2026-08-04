@@ -2,7 +2,7 @@
   "name": "hermes-todo",
   "label": "Todo",
   "description": "Shared task board backend for Hermes Desktop and agents",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "api": "plugin_api.py",
   "tab": {
     "hidden": true

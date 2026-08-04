@@ -13,3 +13,8 @@ Reports will be acknowledged and assessed as promptly as practical. Please allow
 ## Scope
 
 The plugin relies on the Hermes host for authentication and transport security. Reports involving authorization boundaries, unsafe input handling, local data exposure, or unintended network access are in scope.
+
+Hermes Desktop disk plugins execute with the renderer's authority and are not
+sandboxed from the host application. Users should review `plugin.js` and verify
+release checksums before installation. Checksums establish package integrity,
+not code safety.

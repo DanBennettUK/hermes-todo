@@ -760,10 +760,10 @@ function TodoPane({ ctx }) {
   )
 
   const connectionLabel = remote.connection === 'online'
-    ? 'v0.1.1 · Shared with Hermes'
+    ? 'v0.1.2 · Shared with Hermes'
     : remote.connection === 'connecting'
-      ? 'v0.1.1 · Connecting…'
-      : `v0.1.1 · Offline: ${remote.error || 'request failed'}`
+      ? 'v0.1.2 · Connecting…'
+      : `v0.1.2 · Offline: ${remote.error || 'request failed'}`
 
   const rowProps = {
     cycleEstimate: remote.cycleEstimate,
