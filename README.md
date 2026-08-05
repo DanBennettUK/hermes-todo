@@ -31,6 +31,18 @@ Hermes Todo has two independently installed components. Install the server
 plugin first, then the Desktop plugin, into one explicitly selected Hermes
 profile. Do not rely on Hermes' sticky active profile.
 
+### Quick install with your agent
+
+If your agent can install Hermes plugins, tell it:
+
+```text
+Install Hermes Todo v0.1.2 from https://github.com/DanBennettUK/hermes-todo/releases/tag/v0.1.2 into the `default` Hermes profile. Use the release bundle, install both the server and Desktop components, and verify that the Todo pane reports Shared with Hermes.
+```
+
+Replace `default` with the name of your selected Hermes profile when needed.
+The manual steps below explain the same installation if you prefer to run it
+yourself.
+
 Set the target once for every command below. Use `default` literally for the
 default profile, or replace it with a named profile:
 
