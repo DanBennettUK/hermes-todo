@@ -1,6 +1,6 @@
 name: hermes-todo
-version: 0.1.2
-description: "Shared Todo board with independent plan, status, and due dates."
+version: 0.2.0
+description: "Shared Todo board with re-entry context, agent sessions, history, and recurrence."
 author: "Hermes Todo contributors"
 kind: standalone
 platforms:

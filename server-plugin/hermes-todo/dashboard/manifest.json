@@ -1,8 +1,8 @@
 {
   "name": "hermes-todo",
   "label": "Todo",
-  "description": "Shared task board backend for Hermes Desktop and agents",
-  "version": "0.1.2",
+  "description": "Shared task board with re-entry context, agent sessions, history, and recurrence",
+  "version": "0.2.0",
   "api": "plugin_api.py",
   "tab": {
     "hidden": true

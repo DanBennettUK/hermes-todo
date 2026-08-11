@@ -2,7 +2,9 @@
 
 ## Supported version
 
-Security fixes are applied to the current `0.1.x` release line.
+The v0.2.0 source tree is under development and has not been published. The
+latest published release is v0.1.2; security fixes are assessed for that
+release and the unpublished development tree as appropriate.
 
 ## Reporting a vulnerability
 

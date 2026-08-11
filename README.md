@@ -6,16 +6,37 @@ A compact, shared task board for Hermes Desktop and Hermes agents. **Todo** keep
 
 - Planning: **Now**, **Today**, **Later** (with one open Now task)
 - Status: **Open**, **Waiting**, **Blocked**, **Done**
-- All-day or timed due dates, 5–480 minute estimates, projects, priorities P1–P4, and recurrence notes
-- Native Hermes Desktop pane with optimistic writes, polling fallback, filtering, editing, and completion controls
-- **Work with Hermes** creates a dedicated session, focuses the task, submits its context, and opens the conversation
-- Agent-writable `hermes todo` CLI and namespaced REST backend
+- Inbox capture that never claims **Now** without an explicit **Start now** action
+- Durable brief, next action, closure condition, waiting/blocking context, review date, owner, approval, and bounded artefact/evidence fields
+- One Board view with explicit Now/Today/Later planning, due-date grouping, and P1-P4 priority
+- Append-only machine-readable task history and truthful closure notes/evidence
+- **Work with Hermes** persists the linked stored-session ID and resumes it instead of creating a duplicate
+- All-day or timed due dates, 5–480 minute estimates, projects, priorities P1–P4, legacy recurrence notes, and deterministic recurrence occurrences
+- Agent-writable `hermes todo` CLI and namespaced REST backend with task reads, search, agenda, backward-compatible board mutation envelopes, compact opt-in results, and revision conflicts
 - Optional one-time import from plugin-local legacy board storage or a JSON file
+
+### Work-session re-entry contract
+
+Keep task titles concise: they are the board label, not the handover document.
+Use the task's durable fields for the context that must survive into a new work
+session:
+
+- **Brief and decisions** for background, constraints and conclusions already reached
+- **Next action** for the smallest live move
+- **Closure condition** for what proves the task is complete
+- **Artefacts** for meeting notes, source pages, files or other links to inspect
+- **Waiting/blocking context** when progress depends on another person or condition
+
+**Work with Hermes** includes those work-relevant fields in the initial prompt.
+It deliberately does not copy private `sourcePayload` metadata or append-only
+closure history into the prompt. The title can therefore stay readable while
+the session still receives the useful handover.
 
 ## Repository layout
 
 ```text
 desktop-plugin/hermes-todo/plugin.js       Desktop plugin (plain ESM)
+
 server-plugin/hermes-todo/                  Standalone Hermes server plugin
   dashboard/plugin_api.py                   Namespaced FastAPI router
   dashboard/manifest.json
@@ -30,6 +51,10 @@ ARCHITECTURE.md                             architecture and privacy boundary
 Hermes Todo has two independently installed components. Install the server
 plugin first, then the Desktop plugin, into one explicitly selected Hermes
 profile. Do not rely on Hermes' sticky active profile.
+
+The manifests in this source tree identify the v0.2.0 product slice. The
+versioned download examples below intentionally remain on the last published
+v0.1.2 release; do not substitute an unpublished v0.2.0 archive or checksum.
 
 ### Quick install with your agent
 
@@ -220,9 +245,12 @@ a Hermes Desktop lifecycle fault, not a Todo database fault.
 
 ### Plugin does not appear
 
-Confirm the Desktop file is at the exact path above, the folder remains
-`hermes-todo`, and the file imports only `@hermes/plugin-sdk`, `react`, and
-`react/jsx-runtime`. Then run **Reload desktop plugins**.
+Confirm the Desktop files are at the exact path above, the folder remains
+`hermes-todo`, and the plugin uses only the Hermes SDK, React, the JSX runtime,
+and its inline re-entry prompt formatter. Disk plugins must remain a single
+plain ESM file because Hermes Desktop evaluates them from a blob URL; relative
+imports such as `./work-prompt.mjs` cannot resolve there. Then run **Reload
+desktop plugins**.
 
 ## Disable or roll back
 
@@ -264,16 +292,44 @@ published SHA-256 checksum.
 
 ```bash
 hermes --profile "$PROFILE" todo list
-hermes --profile "$PROFILE" todo add "Prepare release notes" --plan today --priority 2 --due 2026-08-07
-hermes --profile "$PROFILE" todo focus TASK_ID
-hermes --profile "$PROFILE" todo wait TASK_ID
-hermes --profile "$PROFILE" todo block TASK_ID
-hermes --profile "$PROFILE" todo done TASK_ID
-hermes --profile "$PROFILE" todo update TASK_ID --project "Release" --estimate 45
+hermes --profile "$PROFILE" todo capture "Prepare release notes" --brief "Decision log and context"
+hermes --profile "$PROFILE" todo start TASK_ID --expected-revision REVISION
+hermes --profile "$PROFILE" todo agenda --timezone Europe/Amsterdam
+hermes --profile "$PROFILE" todo show TASK_ID --history
+hermes --profile "$PROFILE" todo search "release" --owner Dan
+hermes --profile "$PROFILE" todo wait TASK_ID --waiting-on "Reviewer" --review-date 2026-08-12
+hermes --profile "$PROFILE" todo block TASK_ID --blocker "Approval required"
+hermes --profile "$PROFILE" todo done TASK_ID --closure-note "Verified locally" --evidence tests/test_store.py
+hermes --profile "$PROFILE" todo add "Monthly close" --due 2026-08-31 --recurrence-rule monthly --recurrence-timezone Europe/Amsterdam
+hermes --profile "$PROFILE" todo update TASK_ID --next-action "Run the focused suite" --artefact tests/test_store.py
+hermes --profile "$PROFILE" todo session-link TASK_ID STORED_SESSION_ID --expected-revision REVISION
+hermes --profile "$PROFILE" todo follow-up TASK_ID "Check response" --status waiting --waiting-on Reviewer
 hermes --profile "$PROFILE" todo import ./tasks.json
 ```
 
-Import accepts either a JSON task array or `{ "tasks": [...] }`. Stable external records should include both `source` and `externalId`; repeated imports skip existing identities.
+Read commands and mutation commands emit explicit JSON objects. Mutations default to the backward-compatible full-board envelope with `tasks` and the new `revision`; recurrence and follow-up operations also retain their `generatedTask` or `followUpTask` metadata. Pass `--compact` for a result containing the changed `task` and any `affectedTasks`, `generatedTask`, or `followUpTask`. The existing `--board` spelling remains available as an explicit request for the default board envelope. Pass `--expected-revision` to protect a read/modify/write sequence; a stale write exits with code 3 and an `error: "revision_conflict"` object without changing the board.
+
+Import accepts either a JSON task array or `{ "tasks": [...] }`. Stable external records should include both `source` and `externalId`; repeated imports skip existing identities. Imported `createdAt`, `updatedAt`, and (for Done tasks) `completedAt` are preserved. Unknown imported fields are merged into the private, non-returned source payload without replacing an existing `sourcePayload.legacyFields` mapping.
+
+### Recurrence rules
+
+The free-text `recurrence` field remains a display note and is never treated as executable. `recurrenceRule` is deterministic and supports only:
+
+- `daily`
+- `weekdays`
+- `weekly`
+- `monthly` (the day is clamped to the destination month's last day)
+- `every:<n>d`, where `n` is 1–365, for example `every:14d`
+
+An executable rule requires `dueDate` or `dueAt`. `recurrenceTimezone` is an IANA timezone and defaults to the timed due timezone or UTC. Completing an occurrence preserves it as Done and idempotently creates the next occurrence with one stable `seriesId` and a unique `occurrenceId` such as `<seriesId>:2`. Imports that provide recurrence identity must provide `seriesId`, `occurrenceId`, and `occurrenceNumber` together, with `occurrenceId` exactly `<seriesId>:<occurrenceNumber>`; when none are supplied, an executable recurrence rule creates the initial identity.
+
+### REST contract
+
+The namespaced API exposes `GET /board`, `GET /tasks`, `GET /tasks/{id}`, `GET /tasks/{id}/history`, and `GET /agenda`. Mutations default to the backward-compatible full-board envelope. Add `?envelope=result` to opt into the compact mutation result; `?envelope=board` remains a compatible explicit board request. Mutation bodies accept `expectedRevision`; delete accepts it as a query parameter. Conflicts return HTTP 409 with `expectedRevision` and `currentRevision`.
+
+Agenda conversion interprets a naive `dueAt` in the task's `dueTimezone` before converting it to the requested agenda timezone; invalid legacy timezone metadata safely falls back to the agenda timezone. A waiting task receives the `waiting_review` reason only when its `reviewDate` is today or overdue.
+
+Dedicated operations link or idempotently complete a work session, idempotently generate the next recurrence, and atomically complete a task with a follow-up. Omitting closure fields from complete-with-follow-up preserves existing closure data; explicit null or empty values clear it. They remain local Todo state changes: a closure note or evidence path does not claim that an external delivery was verified.
 
 ## Security and data retention
 
@@ -288,7 +344,7 @@ Imported `sourcePayload` metadata is retained only in the profile-local SQLite d
 
 ## Development and verification
 
-No build step or third-party runtime dependency is required for the store/CLI. The API is loaded inside Hermes, which supplies FastAPI and Pydantic.
+No build step or third-party runtime dependency is required for the store/CLI. The API is loaded inside Hermes, which supplies FastAPI and Pydantic. Python's standard-library timezone database must contain the selected IANA recurrence/agenda timezone.
 
 ```bash
 PYTHONPATH=server-plugin/hermes-todo python3 -m unittest discover -s tests -v
