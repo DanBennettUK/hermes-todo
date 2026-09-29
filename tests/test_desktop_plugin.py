@@ -54,6 +54,8 @@ class HermesTodoDesktopContractTests(unittest.TestCase):
         self.assertIn("SegmentedControl", source)
         self.assertIn("icons.Save", source)
         self.assertIn("const DETAIL_TABS", source)
+        self.assertLess(source.index("...tabFields"), source.index("children: 'Cancel'"))
+        self.assertIn("Confirm delete", source)
         self.assertIn("id: 'subs'", source)
         self.assertIn("function SubtaskEditor", source)
         self.assertIn("task.subtaskCount > 0", source)
