@@ -100,6 +100,7 @@ SCHEMA = {
             "waiting_on": {"type": "string", "description": "update: waiting context (cleared with empty string)."},
             "review_date": {"type": "string", "description": "update: review date YYYY-MM-DD."},
             "blocker": {"type": "string", "description": "update: blocking reason (cleared with empty string)."},
+            "artefacts": {"type": "array", "items": {"type": "string"}, "description": "create/update: durable output paths or links, max 20."},
             "closure_note": {"type": "string", "description": "done: what was delivered."},
             "evidence": {"type": "array", "items": {"type": "string"}, "description": "done: verification paths or links."},
             "expected_revision": {"type": "integer", "description": "Optimistic concurrency guard from a previous read."},
@@ -158,7 +159,7 @@ def _apply(args: dict[str, Any]) -> dict[str, Any]:
         ("project", "project"), ("owner", "owner"), ("brief", "brief"),
         ("next_action", "nextAction"), ("closure_condition", "closureCondition"),
         ("waiting_on", "waitingOn"), ("review_date", "reviewDate"),
-        ("blocker", "blocker"),
+        ("blocker", "blocker"), ("artefacts", "artefacts"),
     )
     if action == "create":
         if not args.get("title"):
