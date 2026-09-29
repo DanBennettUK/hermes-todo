@@ -1895,7 +1895,7 @@ def complete_with_follow_up(
 
 
 _IMPORT_KEYS = {
-    "id", "title", "lane", "plan", "status", "estimate", "dueDate", "dueAt",
+    "id", "title", "lane", "plan", "status", "category", "estimate", "dueDate", "dueAt",
     "dueTimezone", "dueLanguage", "source", "externalId", "project", "priority",
     "recurrence", "sourceUpdatedAt", "sourcePayload", "createdAt", "brief",
     "nextAction", "closureCondition", "waitingOn", "reviewDate", "blocker", "artefacts",
