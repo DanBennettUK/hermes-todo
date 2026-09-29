@@ -20,9 +20,18 @@ const MIGRATION_KEY = 'remote-board-v1-migrated'
 const ESTIMATES = [15, 25, 45, 60]
 const PLANS = new Set(['now', 'today', 'later'])
 const STATUSES = new Set(['open', 'waiting', 'blocked', 'done'])
+const CATEGORIES = ['today', 'tomorrow', 'this-week', 'this-month', 'soon']
+const CATEGORY_SET = new Set(CATEGORIES)
+const CATEGORY_LABELS = {
+  today: 'Today',
+  tomorrow: 'Tomorrow',
+  'this-week': 'This Week',
+  'this-month': 'This Month',
+  soon: 'Soon'
+}
 const POLL_MS = 3000
 
-const emptyBoard = () => ({ version: 4, revision: 0, tasks: [] })
+const emptyBoard = () => ({ version: 6, revision: 0, tasks: [] })
 
 // Hermes Desktop evaluates disk plugins as one uncompiled ESM module loaded
 // from a blob URL. Keep this formatter inline: relative imports such as
@@ -36,6 +45,7 @@ function buildWorkPrompt(task) {
     task.project ? `Project: ${task.project}` : null,
     `Plan: ${task.plan}`,
     `Status: ${task.status}`,
+    task.category ? `Category: ${task.category}` : null,
     `Working estimate: ${task.estimate} minutes`,
     task.priority ? `Priority: P${task.priority}` : null,
     task.dueDate ? `Due date: ${task.dueDate}` : null,
@@ -59,13 +69,153 @@ function buildWorkPrompt(task) {
     'Start a dedicated work session for this Hermes Todo task.',
     ...context,
     '',
-    'Treat the Hermes Todo task as the authoritative work item. Help me make progress now: identify the smallest useful next action, then do safe work directly where you can. Keep the task updated when its status or plan genuinely changes. Record closure evidence truthfully; never describe an external delivery as verified when it is only drafted or locally checked.'
+    'Treat the Hermes Todo task as the authoritative work item. Help me make progress now: identify the smallest useful next action, then do safe work directly where you can. Keep the task updated when its status or plan genuinely changes. Record closure evidence truthfully; never describe an external delivery as verified when it is only drafted or locally checked.',
+    'Then help me make progress now: identify the smallest useful next action, and do safe work directly where you can. Record closure evidence truthfully; never describe an external delivery as verified when it is only drafted or locally checked.'
   ].join('\n')
 }
 
 function makeId() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
   return `task-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+const dragPointerState = {
+  task: null,
+  startX: 0,
+  startY: 0,
+  active: false,
+  pointerId: null,
+  ghost: null,
+  offsetX: 0,
+  offsetY: 0,
+  cleanup: null
+}
+const DRAG_THRESHOLD_PX = 6
+
+function beginPointerDrag(state, event) {
+  state.active = true
+  setDragActive(true)
+  document.body.style.userSelect = 'none'
+  const ghost = document.createElement('div')
+  ghost.textContent = state.task.title
+  ghost.style.cssText =
+    'position:fixed;z-index:9999;pointer-events:none;max-width:260px;padding:4px 10px;' +
+    'border-radius:6px;font-size:12px;line-height:18px;background:var(--ui-bg-elevated,#1f2937);' +
+    'color:var(--ui-text-primary,#e5e7eb);border:1px solid var(--ui-stroke-secondary,#374151);' +
+    'box-shadow:0 8px 24px rgba(0,0,0,0.35);opacity:0.95'
+  ghost.style.left = `${event.clientX - state.offsetX}px`
+  ghost.style.top = `${event.clientY - state.offsetY}px`
+  document.body.appendChild(ghost)
+  state.ghost = ghost
+
+  const onMove = moveEvent => {
+    if (moveEvent.pointerId !== state.pointerId) return
+    ghost.style.left = `${moveEvent.clientX - state.offsetX}px`
+    ghost.style.top = `${moveEvent.clientY - state.offsetY}px`
+    updateDropIndicator(moveEvent.clientX, moveEvent.clientY)
+  }
+  const finish = (upEvent, commit) => {
+    if (upEvent && upEvent.pointerId !== state.pointerId) return
+    window.removeEventListener('pointermove', onMove, true)
+    window.removeEventListener('pointerup', onUp, true)
+    window.removeEventListener('keydown', onKey, true)
+    document.body.style.userSelect = ''
+    setDragActive(false)
+    if (ghost.parentNode) ghost.parentNode.removeChild(ghost)
+    clearDropIndicator()
+    const task = state.task
+    const x = upEvent ? upEvent.clientX : 0
+    const y = upEvent ? upEvent.clientY : 0
+    state.task = null
+    state.active = false
+    state.pointerId = null
+    state.ghost = null
+    if (commit && task) dropTaskAt(task, x, y)
+  }
+  const onUp = upEvent => finish(upEvent, true)
+  const onKey = keyEvent => {
+    if (keyEvent.key === 'Escape') finish(keyEvent, false)
+  }
+  window.addEventListener('pointermove', onMove, true)
+  window.addEventListener('pointerup', onUp, true)
+  window.addEventListener('keydown', onKey, true)
+}
+
+
+// Drop-target hit testing: find the drop category + index under the pointer
+function resolveDropTarget(x, y) {
+  const nowHost = document.querySelector('[data-todo-now]')
+  if (nowHost) {
+    const rect = nowHost.getBoundingClientRect()
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+      return { categoryId: 'now', index: 0 }
+    }
+  }
+  const inboxHost = document.querySelector('[data-todo-inbox]')
+  if (inboxHost) {
+    const rect = inboxHost.getBoundingClientRect()
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+      return { categoryId: 'inbox', index: 0 }
+    }
+  }
+  const sections = document.querySelectorAll('[data-todo-category]')
+  for (const section of sections) {
+    const rect = section.getBoundingClientRect()
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+      const categoryId = section.getAttribute('data-todo-category')
+      const rows = section.querySelectorAll('[data-todo-task]')
+      let index = rows.length
+      for (let i = 0; i < rows.length; i += 1) {
+        const rowRect = rows[i].getBoundingClientRect()
+        if (y < rowRect.top + rowRect.height / 2) {
+          index = i
+          break
+        }
+      }
+      return { categoryId, index }
+    }
+  }
+  return null
+}
+
+function dropTaskAt(task, x, y) {
+  const target = resolveDropTarget(x, y)
+  if (!target) return
+  if (!dropContext) return
+  if (target.categoryId === 'now') {
+    if (!dropContext.update) return
+    if (task.plan === 'now' && task.status === 'open' && !task.inbox) return
+    const changes = { plan: 'now', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }
+    dropContext.update(task.id, changes)
+    return
+  }
+  if (target.categoryId === 'inbox') {
+    if (!dropContext.update) return
+    if (task.inbox) return
+    if (task.status !== 'open' || task.plan === 'now') {
+      dropContext.update(task.id, { inbox: true, plan: 'later', status: 'open', waitingOn: null, reviewDate: null, blocker: null })
+    } else {
+      dropContext.update(task.id, { inbox: true, plan: 'later' })
+    }
+    return
+  }
+  if (task.inbox || task.plan === 'now') {
+    if (!dropContext.update) return
+    const changes = { category: target.categoryId, inbox: false }
+    if (task.plan === 'now') changes.plan = 'today'
+    dropContext.update(task.id, changes)
+    return
+  }
+  if (!dropContext.reorder) return
+  const siblings = (dropContext.sections[target.categoryId] || []).filter(item => item.id !== task.id)
+  const clamped = Math.max(0, Math.min(target.index, siblings.length))
+  const before = siblings[clamped]
+  const after = siblings[clamped - 1]
+  if (task.category === target.categoryId && !before && !after) return
+  const payload = { category: target.categoryId }
+  if (before) payload.beforeId = before.id
+  if (after) payload.afterId = after.id
+  dropContext.reorder(task.id, payload)
 }
 
 function legacyDimensions(lane) {
@@ -75,15 +225,13 @@ function legacyDimensions(lane) {
   return { plan: 'today', status: 'open' }
 }
 
-function sectionFor(task, today = localDateKey()) {
+function sectionFor(task) {
   if (task.status === 'done') return 'done'
   if (task.status === 'blocked') return 'blocked'
   if (task.status === 'waiting') return 'waiting'
   if (task.inbox) return 'inbox'
   if (task.plan === 'now') return 'now'
-  const due = deadlineDateKey(task)
-  if (due && due <= today) return 'today'
-  return task.plan
+  return CATEGORY_SET.has(task.category) ? task.category : 'today'
 }
 
 function normaliseTask(task) {
@@ -91,12 +239,18 @@ function normaliseTask(task) {
   const legacy = legacyDimensions(task.lane)
   const plan = PLANS.has(task.plan) ? task.plan : legacy.plan
   const status = STATUSES.has(task.status) ? task.status : legacy.status
+  const category = CATEGORY_SET.has(task.category)
+    ? task.category
+    : plan === 'later' ? 'soon' : 'today'
+  const position = Number.isFinite(Number(task.position)) ? Number(task.position) : 0
   return {
     ...task,
     id: typeof task.id === 'string' && task.id ? task.id : makeId(),
     title: task.title.trim().slice(0, 500),
     plan,
     status,
+    category,
+    position,
     lane: status === 'open' ? plan : status,
     estimate: Number.isFinite(Number(task.estimate)) ? Number(task.estimate) : 25,
     dueDate: typeof task.dueDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(task.dueDate) ? task.dueDate : null,
@@ -146,7 +300,7 @@ function normaliseBoard(value) {
     keptNow = true
   }
   return {
-    version: Number(value.version) || 4,
+    version: Number(value.version) || 6,
     revision: Number(value.revision) || 0,
     tasks
   }
@@ -232,17 +386,6 @@ function zonedDateTimeToDate(value, timeZone) {
   return candidate
 }
 
-function deadlineDateKey(task) {
-  if (task.dueDate) return task.dueDate
-  if (!task.dueAt) return null
-  const dueText = String(task.dueAt)
-  const taskTimeZone = safeTimeZone(task.dueTimezone)
-  const naiveInTaskZone = !/(?:Z|[+-]\d{2}:\d{2})$/i.test(dueText) && Boolean(taskTimeZone)
-  const due = naiveInTaskZone ? zonedDateTimeToDate(dueText, taskTimeZone) : new Date(dueText)
-  if (Number.isNaN(due.getTime())) return null
-  return localDateKey(due)
-}
-
 function localDateTimeValue(value, timeZone) {
   if (!value) return ''
   const text = String(value)
@@ -279,6 +422,33 @@ function optimisticPatch(board, id, changes) {
   nextTarget.completedAt = nextTarget.status === 'done' ? target.completedAt || now : null
   nextTarget.updatedAt = now
   nextTarget.lane = nextTarget.status === 'open' ? nextTarget.plan : nextTarget.status
+  if (Object.prototype.hasOwnProperty.call(changes, 'category') && !CATEGORY_SET.has(nextTarget.category)) {
+    nextTarget.category = 'today'
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(changes, 'beforeId') ||
+    Object.prototype.hasOwnProperty.call(changes, 'afterId') ||
+    (Object.prototype.hasOwnProperty.call(changes, 'category') && changes.category !== target.category)
+  ) {
+    const siblings = board.tasks
+      .filter(task => task.id !== id && task.category === nextTarget.category && task.status !== 'done' && !task.inbox && task.plan !== 'now')
+      .map(task => ({ id: task.id, position: Number(task.position) || 0 }))
+      .sort((a, b) => a.position - b.position)
+    const beforePosition = changes.beforeId ? siblings.find(task => task.id === changes.beforeId)?.position : undefined
+    const afterPosition = changes.afterId ? siblings.find(task => task.id === changes.afterId)?.position : undefined
+    if (beforePosition !== undefined && afterPosition !== undefined) {
+      nextTarget.position = (beforePosition + afterPosition) / 2
+    } else if (beforePosition !== undefined) {
+      const prev = siblings.filter(task => task.position < beforePosition).pop()
+      nextTarget.position = prev ? (prev.position + beforePosition) / 2 : beforePosition - 1024
+    } else if (afterPosition !== undefined) {
+      const next = siblings.find(task => task.position > afterPosition)
+      nextTarget.position = next ? (afterPosition + next.position) / 2 : afterPosition + 1024
+    } else {
+      const last = siblings[siblings.length - 1]
+      nextTarget.position = last ? last.position + 1024 : 1024
+    }
+  }
 
   return {
     ...board,
@@ -424,6 +594,50 @@ function useRemoteBoard(ctx) {
     [update]
   )
 
+  const reorder = useCallback(
+    (id, target) => enqueue(async () => {
+      await queryClient.cancelQueries({ queryKey })
+      const snapshot = boardRef.current
+      const changes = { category: target.category }
+      if (target.beforeId) changes.beforeId = target.beforeId
+      if (target.afterId) changes.afterId = target.afterId
+      const optimistic = optimisticPatch(snapshot, id, changes)
+      boardRef.current = optimistic
+      queryClient.setQueryData(queryKey, optimistic)
+      setPendingIds(current => new Set(current).add(id))
+      try {
+        const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}/reorder?envelope=result`, {
+          method: 'POST',
+          body: {
+            category: target.category,
+            beforeId: target.beforeId || null,
+            afterId: target.afterId || null,
+            expectedRevision: snapshot.revision,
+            eventSource: 'desktop'
+          },
+          timeoutMs: 8000
+        })
+        commitMutation(remote)
+        return true
+      } catch (error) {
+        if (boardRef.current === optimistic) {
+          boardRef.current = snapshot
+          queryClient.setQueryData(queryKey, snapshot)
+        }
+        host.notifyError(error, 'Could not reorder the shared Todo board')
+        return false
+      } finally {
+        setPendingIds(current => {
+          const next = new Set(current)
+          next.delete(id)
+          return next
+        })
+        invalidateRelated(id)
+      }
+    }),
+    [commitMutation, ctx, enqueue, invalidateRelated, queryClient, queryKey]
+  )
+
   const add = useCallback(
     title => enqueue(async () => {
       setAdding(true)
@@ -547,6 +761,7 @@ function useRemoteBoard(ctx) {
     completeSession,
     connection: query.isError ? 'offline' : query.data ? 'online' : 'connecting',
     cycleEstimate,
+    reorder,
     error: query.error ? errorText(query.error) : '',
     linkSession,
     pendingIds,
@@ -584,6 +799,17 @@ function EstimateButton({ disabled, minutes, onClick }) {
     variant: 'text',
     children: `${minutes}m`
   })
+}
+
+function deadlineDateKey(task) {
+  if (task.dueDate) return task.dueDate
+  if (!task.dueAt) return null
+  const dueText = String(task.dueAt)
+  const taskTimeZone = safeTimeZone(task.dueTimezone)
+  const naiveInTaskZone = !/(?:Z|[+-]\d{2}:\d{2})$/i.test(dueText) && Boolean(taskTimeZone)
+  const due = naiveInTaskZone ? zonedDateTimeToDate(dueText, taskTimeZone) : new Date(dueText)
+  if (Number.isNaN(due.getTime())) return null
+  return localDateKey(due)
 }
 
 function dueLabel(task) {
@@ -839,6 +1065,16 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
           jsx(ChoiceButton, { active: task.status === 'open' && task.plan === 'later', disabled, onClick: () => void update(task.id, { plan: 'later', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }), children: 'Later' })
         ]
       }),
+      jsx(FieldLabel, { children: 'Category' }),
+      jsxs('div', {
+        className: 'flex flex-wrap gap-1',
+        children: CATEGORIES.map(categoryId => jsx(ChoiceButton, {
+          active: task.category === categoryId,
+          disabled,
+          onClick: () => void update(task.id, { category: categoryId }),
+          children: CATEGORY_LABELS[categoryId]
+        }, categoryId))
+      }),
       jsx(FieldLabel, { children: 'Status' }),
       jsxs('div', {
         className: 'flex flex-wrap gap-1',
@@ -852,8 +1088,27 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
       jsxs('div', {
         className: 'mb-1 flex gap-1',
         children: [
-          jsx(ChoiceButton, { active: dueMode === 'date', disabled, onClick: () => setDueMode('date'), children: 'All day' }),
-          jsx(ChoiceButton, { active: dueMode === 'timed', disabled, onClick: () => setDueMode('timed'), children: 'Timed' })
+          jsx(ChoiceButton, {
+            active: dueMode === 'date',
+            disabled,
+            onClick: () => {
+              if (dueMode === 'date') return
+              setDueMode('date')
+              const carried = (timedDraft || '').slice(0, 10)
+              if (/^\d{4}-\d{2}-\d{2}$/.test(carried)) setDueDraft(carried)
+            },
+            children: 'All day'
+          }),
+          jsx(ChoiceButton, {
+            active: dueMode === 'timed',
+            disabled,
+            onClick: () => {
+              if (dueMode === 'timed') return
+              setDueMode('timed')
+              if (!timedDraft && /^\d{4}-\d{2}-\d{2}$/.test(dueDraft || '')) setTimedDraft(`${dueDraft}T12:00`)
+            },
+            children: 'Timed'
+          })
         ]
       }),
       dueMode === 'timed'
@@ -1011,13 +1266,56 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
   const [editing, setEditing] = useState(false)
   const disabled = pending || workingId === task.id
   const due = dueLabel(task)
+  const draggable = task.status !== 'done'
+
+  const handlePointerDown = event => {
+    if (!draggable) return
+    if (event.button !== 0) return
+    const target = event.target
+    if (target.closest('button, a, input, textarea, select, [contenteditable]')) return
+    dragPointerState.task = task
+    dragPointerState.startX = event.clientX
+    dragPointerState.startY = event.clientY
+    dragPointerState.pointerId = event.pointerId
+    const row = event.currentTarget.getBoundingClientRect()
+    dragPointerState.offsetX = Math.min(40, event.clientX - row.left)
+    dragPointerState.offsetY = 12
+    if (dragPointerState.cleanup) dragPointerState.cleanup()
+    let armed = false
+    const onMove = moveEvent => {
+      if (moveEvent.pointerId !== dragPointerState.pointerId) return
+      const dx = moveEvent.clientX - dragPointerState.startX
+      const dy = moveEvent.clientY - dragPointerState.startY
+      if (!armed && Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
+        armed = true
+              beginPointerDrag(dragPointerState, moveEvent)
+      }
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onUp, true)
+      dragPointerState.cleanup = null
+      if (!armed) {
+        dragPointerState.task = null
+        dragPointerState.pointerId = null
+      }
+    }
+    window.addEventListener('pointermove', onMove, true)
+    window.addEventListener('pointerup', onUp, true)
+    dragPointerState.cleanup = () => {
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onUp, true)
+    }
+  }
 
   return jsxs('div', {
     className: cn(
       'group w-full min-w-0 max-w-full overflow-hidden border-b border-(--ui-stroke-secondary) py-2 last:border-b-0',
-      prominent && 'border-l-2 pl-2.5'
+      prominent && 'border-l-2 pl-2.5',
+      draggable && 'cursor-grab active:cursor-grabbing'
     ),
     style: prominent ? { borderLeftColor: 'var(--ui-accent)' } : undefined,
+    onPointerDown: handlePointerDown,
     children: [
       jsxs('div', {
         className: 'flex min-w-0 items-start gap-2',
@@ -1137,38 +1435,131 @@ function CollapsibleSection(props) {
   })
 }
 
+const CATEGORY_ORDER = ['today', 'tomorrow', 'this-week', 'this-month', 'soon']
+
+let dropContext = { sections: {}, reorder: null, indicator: null }
+
+const dragActiveStore = { value: false, listeners: new Set() }
+function setDragActive(value) {
+  if (dragActiveStore.value === value) return
+  dragActiveStore.value = value
+  for (const listener of dragActiveStore.listeners) listener()
+}
+function useDragActive() {
+  const [value, setValue] = useState(dragActiveStore.value)
+  useEffect(() => {
+    const listener = () => setValue(dragActiveStore.value)
+    dragActiveStore.listeners.add(listener)
+    return () => {
+      dragActiveStore.listeners.delete(listener)
+    }
+  }, [])
+  return value
+}
+
+function updateDropIndicator(x, y) {
+  const target = resolveDropTarget(x, y)
+  if (!dropContext.indicator) return
+  if (!target) {
+    clearDropIndicator()
+    return
+  }
+  const { categoryId, index } = target
+  const line = document.querySelector(`[data-drop-line="${categoryId}-${index}"]`)
+  if (dropContext.indicator === line) return
+  if (dropContext.indicator) dropContext.indicator.style.opacity = '0'
+  if (line) {
+    line.style.opacity = '1'
+    dropContext.indicator = line
+  } else {
+    dropContext.indicator = null
+  }
+}
+
+function clearDropIndicator() {
+  if (dropContext.indicator) dropContext.indicator.style.opacity = '0'
+  dropContext.indicator = null
+}
+
+function DropCategorySection({ categoryId, rowProps, pendingIds, tasks }) {
+  useEffect(() => {
+    dropContext.sections[categoryId] = tasks
+    dropContext.reorder = rowProps.reorder
+    dropContext.update = rowProps.update
+    return () => {
+      delete dropContext.sections[categoryId]
+    }
+  }, [categoryId, rowProps.reorder, rowProps.update, tasks])
+
+  const dragActive = useDragActive()
+  if (!tasks.length && !dragActive) return null
+
+  const dropLine = index => jsx('div', {
+    'data-drop-line': `${categoryId}-${index}`,
+    className: 'pointer-events-none h-0.5 rounded-full bg-(--ui-accent)',
+    style: { opacity: 0, transition: 'opacity 80ms linear' }
+  }, `drop-${categoryId}-${index}`)
+
+  return jsxs('section', {
+    'data-todo-category': categoryId,
+    className: 'mt-4 min-w-0 max-w-full first:mt-0',
+    children: [
+      jsxs('div', {
+        className: 'mb-1.5 flex items-baseline justify-between gap-2',
+        children: [
+          jsx('h3', { className: 'text-xs font-semibold text-(--ui-text-secondary)', children: CATEGORY_LABELS[categoryId] || categoryId }),
+          jsx('span', { className: 'text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)', children: tasks.length })
+        ]
+      }),
+      dropLine(0),
+      tasks.length
+        ? tasks.map((task, index) => jsxs('div', {
+            'data-todo-task': task.id,
+            children: [
+              jsx(TaskRow, { ...rowProps, pending: pendingIds.has(task.id), task }, task.id),
+              dropLine(index + 1)
+            ]
+          }, task.id))
+        : jsx('div', {
+            className: 'py-1 text-[0.6875rem] text-(--ui-text-quaternary)',
+            children: 'Drop tasks here.'
+          })
+    ]
+  })
+}
+
 function BoardView({ remote, rowProps, sections }) {
   return jsxs('div', {
     children: [
       jsx(Section, {
         count: sections.inbox.length,
         title: 'Inbox',
-        children: sections.inbox.length
-          ? sections.inbox.map(task => jsx(TaskRow, { ...rowProps, pending: remote.pendingIds.has(task.id), task }, task.id))
-          : jsx('div', { className: 'py-1 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'Captured tasks wait here until you start or plan them.' })
+        children: jsx('div', {
+          'data-todo-inbox': '1',
+          children: sections.inbox.length
+            ? sections.inbox.map(task => jsx(TaskRow, { ...rowProps, pending: remote.pendingIds.has(task.id), task }, task.id))
+            : jsx('div', { className: 'py-1 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'Captured tasks wait here until you start or plan them. Drop tasks here to park them.' })
+        })
       }),
       jsx(Section, {
         count: sections.now.length,
         title: 'Now',
-        children: sections.now.length
-          ? sections.now.map(task => jsx(TaskRow, { ...rowProps, pending: remote.pendingIds.has(task.id), prominent: true, task }, task.id))
-          : jsx('div', {
-              className: 'border-l-2 border-l-(--ui-stroke-secondary) py-2 pl-2.5 text-xs leading-5 text-(--ui-text-quaternary)',
-              children: 'Nothing is running. Choose Start now when you are ready.'
-            })
+        children: jsx('div', {
+          'data-todo-now': '1',
+          children: sections.now.length
+            ? sections.now.map(task => jsx(TaskRow, { ...rowProps, pending: remote.pendingIds.has(task.id), prominent: true, task }, task.id))
+            : jsx('div', {
+                className: 'border-l-2 border-l-(--ui-stroke-secondary) py-2 pl-2.5 text-xs leading-5 text-(--ui-text-quaternary)',
+                children: 'Nothing is running. Drop a task here or choose Start now.'
+              })
+        })
       }),
-      jsx(Section, {
-        count: sections.today.length,
-        title: 'Today',
-        children: sections.today.length
-          ? sections.today.map(task => jsx(TaskRow, { ...rowProps, pending: remote.pendingIds.has(task.id), task }, task.id))
-          : jsx(EmptyState, {
-              className: 'min-h-20 py-3',
-              description: 'Nothing else is competing for attention.',
-              title: 'Clear'
-            })
-      }),
-      jsx(CollapsibleSection, { pendingIds: remote.pendingIds, rowProps, tasks: sections.later, title: 'Later' }),
+      CATEGORY_ORDER.map(categoryId => jsx(DropCategorySection, {
+        categoryId,
+        pendingIds: remote.pendingIds,
+        rowProps,
+        tasks: sections[categoryId]
+      }, categoryId)),
       jsx(CollapsibleSection, { open: true, pendingIds: remote.pendingIds, rowProps, tasks: sections.blocked, title: 'Blocked' }),
       jsx(CollapsibleSection, { pendingIds: remote.pendingIds, rowProps, tasks: sections.waiting, title: 'Waiting' }),
       jsx(CollapsibleSection, { pendingIds: remote.pendingIds, rowProps, tasks: sections.done, title: 'Closed' })
@@ -1180,18 +1571,25 @@ function TodoPane({ ctx }) {
   const remote = useRemoteBoard(ctx)
   const [draft, setDraft] = useState('')
   const [filter, setFilter] = useState('')
-  const [todayKey, setTodayKey] = useState(localDateKey)
   const [workingId, setWorkingId] = useState(null)
   const workPending = useRef(new Set())
   const gateway = useValue(host.state.gateway)
   const sessionId = useValue(host.state.activeSessionId)
 
   const sections = useMemo(() => {
-    const grouped = { inbox: [], now: [], today: [], later: [], waiting: [], blocked: [], done: [] }
+    const grouped = {
+      inbox: [], now: [], today: [], tomorrow: [], 'this-week': [], 'this-month': [],
+      soon: [], waiting: [], blocked: [], done: []
+    }
     const needle = filter.trim().toLocaleLowerCase()
     for (const task of remote.board.tasks) {
       const haystack = [task.title, task.project, task.recurrence, task.recurrenceRule, task.brief, task.nextAction, task.owner, task.waitingOn, task.blocker].filter(Boolean).join(' ').toLocaleLowerCase()
-      if (!needle || haystack.includes(needle)) grouped[sectionFor(task, todayKey)].push(task)
+      if (!needle || haystack.includes(needle)) grouped[sectionFor(task)].push(task)
+    }
+    const byPosition = (a, b) => (a.position || 0) - (b.position || 0) ||
+      timeValue(a.createdAt) - timeValue(b.createdAt)
+    for (const key of ['today', 'tomorrow', 'this-week', 'this-month', 'soon']) {
+      grouped[key].sort(byPosition)
     }
     const dueThenCreated = (a, b) => {
       const aPriority = a.priority || 99
@@ -1200,15 +1598,12 @@ function TodoPane({ ctx }) {
       const bDue = b.dueDate || b.dueAt || '9999'
       return aPriority - bPriority || aDue.localeCompare(bDue) || timeValue(a.createdAt) - timeValue(b.createdAt)
     }
-    for (const key of ['inbox', 'now', 'today', 'later', 'waiting', 'blocked']) grouped[key].sort(dueThenCreated)
+    for (const key of ['inbox', 'now', 'waiting', 'blocked']) {
+      grouped[key].sort(dueThenCreated)
+    }
     grouped.done.sort((a, b) => timeValue(b.completedAt) - timeValue(a.completedAt))
     return grouped
-  }, [filter, remote.board, todayKey])
-
-  useEffect(() => {
-    const timer = setInterval(() => setTodayKey(localDateKey()), 60_000)
-    return () => clearInterval(timer)
-  }, [])
+  }, [filter, remote.board])
 
   const openCount = remote.board.tasks.filter(task => task.status !== 'done').length
   const shownCount = Object.values(sections).reduce((count, tasks) => count + tasks.length, 0)
@@ -1286,10 +1681,10 @@ function TodoPane({ ctx }) {
   )
 
   const connectionLabel = remote.connection === 'online'
-    ? 'v0.2.0 · Shared with Hermes'
+    ? 'v0.3.0-dev · Shared with Hermes'
     : remote.connection === 'connecting'
-      ? 'v0.2.0 · Connecting…'
-      : `v0.2.0 · Offline: ${remote.error || 'request failed'}`
+      ? 'v0.3.0-dev · Connecting…'
+      : `v0.3.0-dev · Offline: ${remote.error || 'request failed'}`
 
   const rowProps = {
     completeSession: remote.completeSession,
@@ -1297,6 +1692,7 @@ function TodoPane({ ctx }) {
     cycleEstimate: remote.cycleEstimate,
     pending: false,
     remove: remote.remove,
+    reorder: remote.reorder,
     update: remote.update,
     workingId,
     workWithHermes
