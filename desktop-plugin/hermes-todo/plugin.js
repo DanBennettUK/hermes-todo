@@ -1948,7 +1948,14 @@ function BoardView({ remote, rowProps, sections }) {
           'data-todo-inbox': '1',
           children: sections.inbox.length
             ? sections.inbox.map(task => jsx(TaskRow, { ...rowProps, pending: remote.pendingIds.has(task.id), task }, task.id))
-            : jsx('div', { className: 'py-1 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'Captured tasks wait here until you start or plan them. Drop tasks here to park them.' })
+            : jsxs('div', {
+                className: 'py-1 text-center text-[0.6875rem] leading-4 text-(--ui-text-quaternary)',
+                children: [
+                  'Captured tasks wait here until you start or plan them.',
+                  jsx('br'),
+                  'Drop tasks here to park them.'
+                ]
+              })
         })
       }),
       jsx(Section, {

@@ -30,6 +30,8 @@ class HermesTodoDesktopContractTests(unittest.TestCase):
         self.assertIn("plan: 'later'", source)
         self.assertIn("inbox: true", source)
         self.assertIn("Capture to Inbox", source)
+        self.assertIn("Captured tasks wait here until you start or plan them.", source)
+        self.assertIn("Drop tasks here to park them.", source)
         self.assertIn("Start now", source)
         self.assertIn("expectedRevision: snapshot.revision", source)
         self.assertIn("?envelope=result", source)
