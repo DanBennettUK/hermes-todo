@@ -40,6 +40,7 @@ const DETAIL_TABS = [
 ]
 const AUTOSAVE_MS = 500
 const SUBTASK_DRAG_THRESHOLD_PX = 6
+const CONFIRM_COMPLETE_MS = 3000
 
 const emptyBoard = () => ({ version: 7, revision: 0, tasks: [] })
 
@@ -1603,7 +1604,39 @@ function PriorityPill({ priority }) {
 function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pending, workingId, workWithHermes, addSubtask, updateSubtask, removeSubtask, reorderSubtask, prominent = false, reason }) {
   const [editing, setEditing] = useState(false)
   const [subtasksOpen, setSubtasksOpen] = useState(false)
+  const [confirmComplete, setConfirmComplete] = useState(false)
+  const confirmTimerRef = useRef(null)
   const disabled = pending || workingId === task.id
+
+  const clearConfirmComplete = useCallback(() => {
+    if (confirmTimerRef.current) {
+      clearTimeout(confirmTimerRef.current)
+      confirmTimerRef.current = null
+    }
+    setConfirmComplete(false)
+  }, [])
+
+  useEffect(() => {
+    if (!confirmComplete) return undefined
+    const onPointerDown = event => {
+      if (event.target.closest(`[data-todo-complete="${task.id}"]`)) return
+      clearConfirmComplete()
+    }
+    const onKeyDown = event => {
+      if (event.key === 'Escape') clearConfirmComplete()
+    }
+    window.addEventListener('pointerdown', onPointerDown, true)
+    window.addEventListener('keydown', onKeyDown, true)
+    confirmTimerRef.current = setTimeout(clearConfirmComplete, CONFIRM_COMPLETE_MS)
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('keydown', onKeyDown, true)
+      if (confirmTimerRef.current) {
+        clearTimeout(confirmTimerRef.current)
+        confirmTimerRef.current = null
+      }
+    }
+  }, [clearConfirmComplete, confirmComplete, task.id])
   const due = dueLabel(task)
   const draggable = task.status !== 'done'
   const canStartNow = task.status === 'open' && (task.plan !== 'now' || task.inbox)
