@@ -1951,9 +1951,8 @@ function BoardView({ remote, rowProps, sections }) {
             : jsxs('div', {
                 className: 'py-1 text-center text-[0.6875rem] leading-4 text-(--ui-text-quaternary)',
                 children: [
-                  'Captured tasks wait here until you start or plan them.',
-                  jsx('br'),
-                  'Drop tasks here to park them.'
+                  jsx('div', { children: 'Captured tasks wait here until you start or plan them.' }),
+                  jsx('div', { children: 'Drop tasks here to park them.' })
                 ]
               })
         })
