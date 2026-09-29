@@ -1676,16 +1676,52 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
                 className: 'mt-0.5 line-clamp-2 break-words text-[0.625rem] leading-4 text-(--ui-text-tertiary)',
                 children: task.brief.replace(/\s+/g, ' ').trim()
               }),
-              task.subtaskCount > 0 && jsxs('button', {
-                className: 'mt-0.5 inline-flex items-center gap-1 text-[0.625rem] text-(--ui-text-quaternary)',
-                onClick: event => {
-                  event.stopPropagation()
-                  setSubtasksOpen(value => !value)
-                },
-                type: 'button',
+              task.subtaskCount > 0 && jsxs('div', {
+                className: 'mt-0.5 min-w-0',
                 children: [
-                  jsx(subtasksOpen ? icons.ChevronDown : icons.ChevronRight, { className: 'size-3' }),
-                  `${task.subtaskDoneCount || 0}/${task.subtaskCount}`
+                  jsxs('button', {
+                    className: 'inline-flex items-center gap-1 text-[0.625rem] text-(--ui-text-quaternary)',
+                    onClick: event => {
+                      event.stopPropagation()
+                      setSubtasksOpen(value => !value)
+                    },
+                    type: 'button',
+                    children: [
+                      jsx(subtasksOpen ? icons.ChevronDown : icons.ChevronRight, { className: 'size-3' }),
+                      `${task.subtaskDoneCount || 0}/${task.subtaskCount}`
+                    ]
+                  }),
+                  subtasksOpen && jsx('div', {
+                    'data-todo-card-subtask': '',
+                    className: 'mt-0.5 space-y-0.5',
+                    children: (task.subtasks || []).map(item => jsxs('button', {
+                      className: 'flex min-w-0 items-start gap-1 text-left',
+                      disabled,
+                      onClick: event => {
+                        event.stopPropagation()
+                        void updateSubtask(task.id, item.id, { done: !item.done })
+                      },
+                      type: 'button',
+                      children: [
+                        jsx('span', {
+                          'aria-hidden': true,
+                          className: cn(
+                            'mt-0.5 size-2.5 shrink-0 rounded-[2px] border',
+                            item.done
+                              ? 'border-(--ui-accent) bg-(--ui-accent)'
+                              : 'border-(--ui-stroke-primary) bg-transparent'
+                          )
+                        }),
+                        jsx('span', {
+                          className: cn(
+                            'min-w-0 flex-1 truncate text-[0.625rem] leading-4',
+                            item.done ? 'text-(--ui-text-quaternary) line-through' : 'text-(--ui-text-tertiary)'
+                          ),
+                          children: item.title.replace(/\s+/g, ' ').trim()
+                        })
+                      ]
+                    }, item.id))
+                  })
                 ]
               }),
               (reason || task.project || task.owner || task.nextAction || task.recurrence) && jsx('div', {
@@ -1734,20 +1770,6 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
         task,
         update,
         updateSubtask
-      }),
-      subtasksOpen && task.subtaskCount > 0 && jsxs('div', {
-        className: 'mt-1',
-        style: { paddingLeft: 4 },
-        children: [
-          (task.subtasks || []).filter(item => !item.done).map(item => jsx('div', {
-            className: 'truncate text-[0.625rem] leading-4 text-(--ui-text-tertiary)',
-            children: item.title.replace(/\s+/g, ' ').trim()
-          }, item.id)),
-          (task.subtaskDoneCount || 0) > 0 && jsx('div', {
-            className: 'text-[0.625rem] text-(--ui-text-quaternary)',
-            children: `${task.subtaskDoneCount} complete`
-          })
-        ]
       }),
       task.status !== 'done' && jsxs('div', {
         className: 'mt-1.5 flex flex-wrap items-center gap-1',
