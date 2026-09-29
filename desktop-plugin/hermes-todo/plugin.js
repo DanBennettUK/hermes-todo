@@ -975,6 +975,15 @@ function ChoiceButton({ active, children, disabled, onClick }) {
   })
 }
 
+const DIM_FIELD_BORDER = 'color-mix(in srgb, var(--ui-text-primary) 22%, transparent)'
+
+function DimInput(props) {
+  return jsx(Input, {
+    ...props,
+    style: { borderColor: DIM_FIELD_BORDER, ...(props.style || {}) }
+  })
+}
+
 function FieldLabel({ children }) {
   return jsx('div', {
     className: 'mb-1 mt-2 text-[0.6875rem] font-medium text-(--ui-text-tertiary)',
@@ -1146,7 +1155,7 @@ function SubtaskEditor({ task, disabled, addSubtask, updateSubtask, removeSubtas
             onChange: event => void updateSubtask(task.id, item.id, { done: event.target.checked }),
             type: 'checkbox'
           }),
-          jsx(Input, {
+          jsx(DimInput, {
             'aria-label': 'Subtask title',
             className: 'h-7 min-w-0 flex-1 text-xs',
             disabled,
@@ -1158,7 +1167,6 @@ function SubtaskEditor({ task, disabled, addSubtask, updateSubtask, removeSubtas
             onKeyDown: event => {
               if (event.key === 'Enter') event.currentTarget.blur()
             },
-            style: { borderColor: 'color-mix(in srgb, var(--ui-text-primary) 22%, transparent)' },
             defaultValue: item.title
           }),
           jsx(Button, {
@@ -1175,7 +1183,7 @@ function SubtaskEditor({ task, disabled, addSubtask, updateSubtask, removeSubtas
       jsxs('div', {
         className: 'mt-1 flex items-center gap-1',
         children: [
-          jsx(Input, {
+          jsx(DimInput, {
             'aria-label': 'New subtask',
             className: 'h-7 min-w-0 flex-1 text-xs',
             disabled,
@@ -1188,7 +1196,6 @@ function SubtaskEditor({ task, disabled, addSubtask, updateSubtask, removeSubtas
               }
             },
             placeholder: 'Add a subtask',
-            style: { borderColor: 'color-mix(in srgb, var(--ui-text-primary) 22%, transparent)' },
             value: draft
           }),
           jsx(Button, {
@@ -1299,13 +1306,12 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
 
   const workFields = [
     jsx(FieldLabel, { children: 'Task title' }, 'title-label'),
-    jsx(Input, {
+    jsx(DimInput, {
       'aria-label': 'Task title',
       className: 'h-7 text-xs',
       disabled,
       maxLength: 500,
       onChange: event => setTitleDraft(event.target.value),
-      style: { borderColor: 'color-mix(in srgb, var(--ui-text-primary) 22%, transparent)' },
       value: titleDraft
     }, 'title'),
     jsx(TextAreaField, { disabled, label: 'Brief and decisions', maxLength: 8000, onChange: event => setBriefDraft(event.target.value), placeholder: 'Durable context for re-entry', value: briefDraft }, 'brief'),
@@ -1369,7 +1375,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
           children: 'Timed'
         }),
         dueMode === 'timed'
-          ? jsx(Input, {
+          ? jsx(DimInput, {
               'aria-label': 'Timed deadline',
               className: 'h-7 min-w-0 flex-1 text-xs',
               disabled,
@@ -1377,7 +1383,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
               type: 'datetime-local',
               value: timedDraft
             }, 'timed')
-          : jsx(Input, {
+          : jsx(DimInput, {
               'aria-label': 'Due date',
               className: 'h-7 min-w-0 flex-1 text-xs',
               disabled,
@@ -1398,7 +1404,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
       }, String(value)))
     }, 'pri'),
     jsx(FieldLabel, { children: 'Project' }, 'proj-label'),
-    jsx(Input, {
+    jsx(DimInput, {
       'aria-label': 'Project',
       className: 'h-7 text-xs',
       disabled,
@@ -1414,13 +1420,13 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
     jsxs('div', {
       className: 'grid grid-cols-2 gap-1.5',
       children: [
-        jsx(Input, { 'aria-label': 'Waiting on', className: 'h-7 text-xs', disabled, maxLength: 1000, onChange: event => setWaitingOnDraft(event.target.value), placeholder: 'Waiting on', value: waitingOnDraft }),
-        jsx(Input, { 'aria-label': 'Review date', className: 'h-7 text-xs', disabled, onChange: event => setReviewDateDraft(event.target.value), type: 'date', value: reviewDateDraft })
+        jsx(DimInput, { 'aria-label': 'Waiting on', className: 'h-7 text-xs', disabled, maxLength: 1000, onChange: event => setWaitingOnDraft(event.target.value), placeholder: 'Waiting on', value: waitingOnDraft }),
+        jsx(DimInput, { 'aria-label': 'Review date', className: 'h-7 text-xs', disabled, onChange: event => setReviewDateDraft(event.target.value), type: 'date', value: reviewDateDraft })
       ]
     }, 'wait-row'),
     jsx(TextAreaField, { disabled, label: 'Blocker', maxLength: 2000, onChange: event => setBlockerDraft(event.target.value), placeholder: 'What prevents progress?', value: blockerDraft }, 'blocker'),
     jsx(FieldLabel, { children: 'Owner and execution' }, 'owner-label'),
-    jsx(Input, { 'aria-label': 'Owner', className: 'h-7 text-xs', disabled, maxLength: 200, onChange: event => setOwnerDraft(event.target.value), placeholder: 'Owner or assignee', value: ownerDraft }, 'owner'),
+    jsx(DimInput, { 'aria-label': 'Owner', className: 'h-7 text-xs', disabled, maxLength: 200, onChange: event => setOwnerDraft(event.target.value), placeholder: 'Owner or assignee', value: ownerDraft }, 'owner'),
     jsx('div', {
       className: 'mt-1 flex flex-wrap gap-1',
       children: ['manual', 'supervised', 'autonomous'].map(value => jsx(ChoiceButton, { active: executionModeDraft === value, disabled, onClick: () => setExecutionModeDraft(value), children: value }, value))
@@ -1433,7 +1439,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
 
   const moreFields = [
     jsx(FieldLabel, { children: 'Recurrence note' }, 'rec-label'),
-    jsx(Input, {
+    jsx(DimInput, {
       'aria-label': 'Recurrence note',
       className: 'h-7 text-xs',
       disabled,
@@ -1446,8 +1452,8 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
     jsxs('div', {
       className: 'grid grid-cols-2 gap-1.5',
       children: [
-        jsx(Input, { 'aria-label': 'Recurrence rule', className: 'h-7 text-xs', disabled, maxLength: 50, onChange: event => setRecurrenceRuleDraft(event.target.value), placeholder: 'daily, weekdays, weekly…', value: recurrenceRuleDraft }),
-        jsx(Input, { 'aria-label': 'Recurrence timezone', className: 'h-7 text-xs', disabled, maxLength: 100, onChange: event => setRecurrenceTimezoneDraft(event.target.value), placeholder: 'Europe/Amsterdam', value: recurrenceTimezoneDraft })
+        jsx(DimInput, { 'aria-label': 'Recurrence rule', className: 'h-7 text-xs', disabled, maxLength: 50, onChange: event => setRecurrenceRuleDraft(event.target.value), placeholder: 'daily, weekdays, weekly…', value: recurrenceRuleDraft }),
+        jsx(DimInput, { 'aria-label': 'Recurrence timezone', className: 'h-7 text-xs', disabled, maxLength: 100, onChange: event => setRecurrenceTimezoneDraft(event.target.value), placeholder: 'Europe/Amsterdam', value: recurrenceTimezoneDraft })
       ]
     }, 'rule'),
     task.seriesId && jsx('div', { className: 'mt-1 break-all text-[0.625rem] text-(--ui-text-quaternary)', children: `Series ${task.seriesId} · occurrence ${task.occurrenceNumber}` }, 'series'),
@@ -2107,10 +2113,9 @@ function TodoPane({ ctx }) {
             className: 'mt-3 flex gap-1.5',
             onSubmit: event => void addTask(event),
             children: [
-              jsx(Input, {
+              jsx(DimInput, {
                 'aria-label': 'Capture a task to Inbox',
                 className: 'min-w-0 flex-1',
-                style: { borderColor: 'color-mix(in srgb, var(--ui-text-primary) 22%, transparent)' },
                 disabled: remote.connection === 'offline',
                 maxLength: 500,
                 onChange: event => setDraft(event.target.value),
@@ -2136,7 +2141,7 @@ function TodoPane({ ctx }) {
           remote.board.tasks.length > 12 && jsxs('div', {
             className: 'mt-2 flex items-center gap-2',
             children: [
-              jsx(Input, {
+              jsx(DimInput, {
                 'aria-label': 'Filter tasks',
                 className: 'h-7 min-w-0 flex-1 text-xs',
                 onChange: event => setFilter(event.target.value),
