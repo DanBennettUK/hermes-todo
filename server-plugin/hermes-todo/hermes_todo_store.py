@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 import uuid
+import math
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -29,6 +30,9 @@ VALID_CATEGORIES = frozenset(
     {"today", "tomorrow", "this-week", "this-month", "soon"}
 )
 DEFAULT_CATEGORY = "today"
+POSITION_STEP = 1024.0
+POSITION_MAX = 1e15
+POSITION_MIN = -1e15
 VALID_EXECUTION_MODES = frozenset({"manual", "supervised", "autonomous"})
 VALID_APPROVAL_STATES = frozenset({"not-required", "pending", "approved", "rejected"})
 VALID_SESSION_STATES = frozenset({"active", "completed"})
@@ -38,7 +42,7 @@ MAX_SOURCE_PAYLOAD_BYTES = 64 * 1024
 MAX_EVENT_DATA_BYTES = 64 * 1024
 MAX_ARTEFACTS = 20
 MAX_ARTEFACT_LENGTH = 1000
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 _UNSET = object()
 
 
@@ -90,6 +94,7 @@ def _create_v4_tasks(conn: sqlite3.Connection, table: str = "tasks") -> None:
             status TEXT NOT NULL CHECK (status IN ('open', 'waiting', 'blocked', 'done')),
             category TEXT NOT NULL DEFAULT 'today'
                 CHECK (category IN ('today', 'tomorrow', 'this-week', 'this-month', 'soon')),
+            position REAL NOT NULL DEFAULT 0,
             estimate INTEGER NOT NULL CHECK (estimate BETWEEN 5 AND 480),
             due_date TEXT,
             due_at TEXT,
@@ -294,6 +299,13 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
                     conn.execute(
                         "UPDATE tasks SET category = 'soon' WHERE plan = 'later'"
                     )
+                if "position" not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN position REAL NOT NULL DEFAULT 0")
+                    conn.execute(
+                        """
+                        UPDATE tasks SET position = rowid
+                        """
+                    )
                 for name, declaration in _V4_ADDITIONS.items():
                     if name not in columns:
                         conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {declaration}")
@@ -301,6 +313,13 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
                 raise RuntimeError("Unversioned Hermes Todo schema cannot be migrated safely")
 
         _create_v4_support(conn)
+        if "position" in {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+        }:
+            conn.execute(
+                "UPDATE tasks SET position = rowid WHERE position = 0"
+            )
         rows = conn.execute(
             "SELECT id, plan, status, inbox, occurrence_id, created_at FROM tasks"
         ).fetchall()
@@ -383,6 +402,14 @@ def _clean_estimate(value: Any) -> int:
         raise BoardError("Estimate must be between 5 and 480 minutes")
     return value
 
+
+def _clean_position(value: Any, field: str = "Position") -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise BoardError(f"{field} must be a number")
+    position = float(value)
+    if not math.isfinite(position):
+        raise BoardError(f"{field} must be a finite number")
+    return position
 
 
 def _clean_due_date(value: Any, field: str = "Due date") -> str | None:
@@ -574,6 +601,7 @@ def _row_to_task(row: sqlite3.Row) -> dict[str, Any]:
         "plan": plan,
         "status": status,
         "category": str(row["category"]),
+        "position": float(row["position"]),
         "estimate": row["estimate"],
         "dueDate": row["due_date"],
         "dueAt": row["due_at"],
@@ -624,6 +652,7 @@ def _read_board(conn: sqlite3.Connection) -> dict[str, Any]:
             CASE status WHEN 'open' THEN 0 WHEN 'waiting' THEN 1 WHEN 'blocked' THEN 2 ELSE 3 END,
             CASE plan WHEN 'now' THEN 0 WHEN 'today' THEN 1 ELSE 2 END,
             inbox DESC,
+            position,
             created_at,
             id
         """
@@ -753,6 +782,7 @@ def _prepare_task_values(
     plan: Any = None,
     status: Any = None,
     category: Any = None,
+    position: Any = None,
     due_date: Any = None,
     due_at: Any = None,
     due_timezone: Any = None,
@@ -800,6 +830,7 @@ def _prepare_task_values(
         if category is not None
         else DEFAULT_CATEGORY
     )
+    clean_position = _clean_position(position) if position is not None else None
     clean_due_date = _clean_due_date(due_date)
     clean_due_at = _clean_due_at(due_at)
     if clean_due_date and clean_due_at:
@@ -863,6 +894,7 @@ def _prepare_task_values(
         "plan": clean_plan,
         "status": clean_status,
         "category": clean_category,
+        "position": clean_position,
         "estimate": _clean_estimate(estimate),
         "due_date": clean_due_date,
         "due_at": clean_due_at,
@@ -904,7 +936,7 @@ def _prepare_task_values(
 
 
 _INSERT_COLUMNS = (
-    "id", "title", "plan", "status", "category", "estimate", "due_date", "due_at",
+    "id", "title", "plan", "status", "category", "position", "estimate", "due_date", "due_at",
     "due_timezone", "due_language", "source", "external_id", "project",
     "priority", "recurrence", "source_updated_at", "source_payload", "brief",
     "next_action", "closure_condition", "waiting_on", "review_date", "blocker",
@@ -923,6 +955,14 @@ def _insert_values(conn: sqlite3.Connection, values: dict[str, Any]) -> None:
     )
 
 
+def _next_position_on_conn(conn: sqlite3.Connection) -> float:
+    """Place a new task after all existing rows so imports stay append-only."""
+    row = conn.execute("SELECT MAX(position) FROM tasks").fetchone()
+    max_position = float(row[0]) if row and row[0] is not None else 0.0
+    if max_position >= POSITION_MAX - POSITION_STEP:
+        return POSITION_MAX
+    return max_position + POSITION_STEP
+
 
 def create_task(
     title: str,
@@ -939,6 +979,8 @@ def create_task(
     try:
         conn.execute("BEGIN IMMEDIATE")
         _check_expected_revision(conn, expected_revision)
+        if values["position"] is None:
+            values["position"] = _next_position_on_conn(conn)
         affected: list[str] = []
         if values["status"] == "open" and values["plan"] == "now":
             affected = _demote_other_now(
@@ -1028,6 +1070,7 @@ def _clean_updates(existing: sqlite3.Row, changes: dict[str, Any]) -> dict[str, 
         "plan": lambda value: _clean_choice(value, VALID_PLANS, "plan"),
         "status": lambda value: _clean_choice(value, VALID_STATUSES, "status"),
         "category": lambda value: _clean_choice(value, VALID_CATEGORIES, "category"),
+        "position": _clean_position,
         "estimate": _clean_estimate,
         "due_date": _clean_due_date,
         "due_at": _clean_due_at,
@@ -1192,7 +1235,7 @@ def _record_update_events(
     generic = {
         key: value
         for key, value in changed.items()
-        if key not in {"title", "plan", "category", "status", "waiting_on", "review_date", "blocker", "artefacts"}
+        if key not in {"title", "plan", "category", "position", "status", "waiting_on", "review_date", "blocker", "artefacts"}
     }
     if generic:
         _append_event(
@@ -1200,6 +1243,146 @@ def _record_update_events(
             source=event_source, created_at=now,
         )
 
+
+def _category_bounds_for_insert(
+    conn: sqlite3.Connection,
+    category: str,
+    task_id: str,
+    before: sqlite3.Row | None,
+    after: sqlite3.Row | None,
+) -> tuple[float, float]:
+    """Open interval (lower, upper) for inserting task_id near its neighbours."""
+    if before is not None and after is not None:
+        return float(after["position"]), float(before["position"])
+    if before is not None:
+        upper = float(before["position"])
+        row = conn.execute(
+            "SELECT MAX(position) FROM tasks WHERE category = ? AND position < ? AND id <> ?",
+            (category, upper, before["id"]),
+        ).fetchone()
+        lower = float(row[0]) if row and row[0] is not None else upper - POSITION_STEP
+        return lower, upper
+    if after is not None:
+        lower = float(after["position"])
+        row = conn.execute(
+            "SELECT MIN(position) FROM tasks WHERE category = ? AND position > ? AND id <> ?",
+            (category, lower, after["id"]),
+        ).fetchone()
+        upper = float(row[0]) if row and row[0] is not None else lower + POSITION_STEP
+        return lower, upper
+    row = conn.execute(
+        "SELECT MAX(position) FROM tasks WHERE category = ? AND id <> ?",
+        (category, task_id),
+    ).fetchone()
+    lower = float(row[0]) if row and row[0] is not None else 0.0
+    return lower, lower + POSITION_STEP
+
+
+def reorder_task(
+    task_id: str,
+    *,
+    category: str | None = None,
+    before_id: str | None = None,
+    after_id: str | None = None,
+    expected_revision: int | None = None,
+    actor: str | None = None,
+    event_source: str = "store",
+    return_board: bool = True,
+) -> dict[str, Any]:
+    """Position a task inside a category, optionally between two neighbours."""
+    clean_category = (
+        _clean_choice(category, VALID_CATEGORIES, "category")
+        if category is not None
+        else None
+    )
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _check_expected_revision(conn, expected_revision)
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            raise KeyError(task_id)
+        before = None
+        after = None
+        if before_id:
+            before = conn.execute(
+                "SELECT id, category, position FROM tasks WHERE id = ?", (before_id,)
+            ).fetchone()
+            if before is None:
+                raise BoardError(f"Unknown before task: {before_id}")
+        if after_id:
+            after = conn.execute(
+                "SELECT id, category, position FROM tasks WHERE id = ?", (after_id,)
+            ).fetchone()
+            if after is None:
+                raise BoardError(f"Unknown after task: {after_id}")
+        if clean_category is not None:
+            target_category = clean_category
+            for neighbour in (before, after):
+                if neighbour is not None and str(neighbour["category"]) != target_category:
+                    raise BoardError("Drop neighbour is in a different category")
+        else:
+            if before is not None and after is not None:
+                if str(before["category"]) != str(after["category"]):
+                    raise BoardError("Before and after tasks must be in the same category")
+            target_category = str((before or after or row)["category"])
+        lower, upper = _category_bounds_for_insert(
+            conn, target_category, task_id, before, after
+        )
+        new_position = (lower + upper) / 2.0
+        if not POSITION_MIN < new_position < POSITION_MAX:
+            _rebalance_category(conn, target_category)
+            if before is not None:
+                before = conn.execute(
+                    "SELECT id, category, position FROM tasks WHERE id = ?", (before["id"],)
+                ).fetchone()
+            if after is not None:
+                after = conn.execute(
+                    "SELECT id, category, position FROM tasks WHERE id = ?", (after["id"],)
+                ).fetchone()
+            lower, upper = _category_bounds_for_insert(
+                conn, target_category, task_id, before, after
+            )
+            new_position = (lower + upper) / 2.0
+        now = _utc_now()
+        updates: dict[str, Any] = {"position": new_position, "updated_at": now}
+        if str(row["category"]) != target_category:
+            updates["category"] = target_category
+        assignments = [f"{column} = ?" for column in updates]
+        conn.execute(
+            f"UPDATE tasks SET {', '.join(assignments)} WHERE id = ?",
+            [*updates.values(), task_id],
+        )
+        changed: dict[str, Any] = {
+            "position": {"from": float(row["position"]), "to": new_position}
+        }
+        if "category" in updates:
+            changed["category"] = {"from": str(row["category"]), "to": target_category}
+        _append_event(
+            conn, task_id, "task.reordered", data=changed,
+            actor=actor, source=event_source, created_at=now,
+        )
+        _bump_revision(conn)
+        result = _task_result(conn, task_id)
+        conn.commit()
+        return _return_mutation(conn, result, return_board)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _rebalance_category(conn: sqlite3.Connection, category: str) -> None:
+    rows = conn.execute(
+        "SELECT id FROM tasks WHERE category = ? ORDER BY position, created_at, id",
+        (category,),
+    ).fetchall()
+    for index, row in enumerate(rows, start=1):
+        conn.execute(
+            "UPDATE tasks SET position = ? WHERE id = ?",
+            (float(index) * POSITION_STEP, row["id"]),
+        )
 
 
 def _advance_date(value: date, rule: str) -> date:
@@ -1268,6 +1451,7 @@ def _generate_next_occurrence(
         "plan": "today" if row["plan"] == "now" else row["plan"],
         "status": "open",
         "category": str(row["category"]),
+        "position": float(row["position"]),
         "estimate": row["estimate"],
         "due_date": next_due_date,
         "due_at": next_due_at,
@@ -1860,6 +2044,8 @@ def complete_with_follow_up(
         generated, _ = _generate_next_occurrence(
             conn, current, actor=actor, event_source=event_source, now=now
         )
+        if follow_values.get("position") is None:
+            follow_values["position"] = _next_position_on_conn(conn)
         affected: list[str] = []
         if follow_values["status"] == "open" and follow_values["plan"] == "now":
             affected = _demote_other_now(
@@ -2006,6 +2192,7 @@ def import_tasks(
                 plan=raw.get("plan"),
                 status=raw.get("status"),
                 category=raw.get("category"),
+                position=raw.get("position"),
                 estimate=raw.get("estimate", DEFAULT_ESTIMATE),
                 due_date=raw.get("dueDate"),
                 due_at=raw.get("dueAt"),
@@ -2053,6 +2240,8 @@ def import_tasks(
                     )
             if values["plan"] == "now" and values["status"] == "open" and has_open_now:
                 values["plan"] = "today"
+            if values["position"] is None:
+                values["position"] = _next_position_on_conn(conn)
             _insert_values(conn, values)
             _append_event(
                 conn, values["id"], "task.created",
