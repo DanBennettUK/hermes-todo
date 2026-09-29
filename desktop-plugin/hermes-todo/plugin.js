@@ -3,6 +3,7 @@ import {
   EmptyState,
   Input,
   SegmentedControl,
+  PALETTE_AREA,
   Tip,
   cn,
   haptic,
@@ -2285,16 +2286,56 @@ export default {
   id: ID,
   name: 'Todo',
   register(ctx) {
+    const paneOptions = {
+      dock: { pane: 'workspace', pos: 'right' },
+      minWidth: '22rem',
+      render: () => jsx(TodoPane, { ctx }),
+      title: 'Todo'
+    }
+    let closeWorkspace = null
+
+    const showTodo = () => {
+      if (typeof host.openWorkspace === 'function') {
+        closeWorkspace = host.openWorkspace('todo', {
+          ...paneOptions,
+          onClose: () => {
+            closeWorkspace = null
+          }
+        })
+        return
+      }
+      if (typeof host.revealPane === 'function') host.revealPane(`${ID}:pane`)
+    }
+
+    if (typeof host.openWorkspace === 'function') {
+      showTodo()
+    } else {
+      ctx.register({
+        id: 'pane',
+        area: 'panes',
+        title: 'todo',
+        data: {
+          placement: 'right',
+          dock: { pane: 'workspace', pos: 'right' },
+          width: '360px'
+        },
+        render: paneOptions.render
+      })
+    }
+
     ctx.register({
-      id: 'pane',
-      area: 'panes',
-      title: 'todo',
+      id: 'open',
+      area: PALETTE_AREA,
       data: {
-        placement: 'right',
-        dock: { pane: 'workspace', pos: 'right' },
-        width: '360px'
-      },
-      render: () => jsx(TodoPane, { ctx })
+        id: 'hermes-todo.open',
+        keywords: ['todo', 'tasks', 'board', 'open', 'reopen', 'show'],
+        label: 'Show Todo',
+        run: showTodo
+      }
+    })
+
+    ctx.onDispose(() => {
+      closeWorkspace?.()
     })
   }
 }
