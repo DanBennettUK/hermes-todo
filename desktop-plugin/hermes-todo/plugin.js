@@ -35,11 +35,13 @@ const DETAIL_TABS = [
   { id: 'work', label: 'Work' },
   { id: 'plan', label: 'Plan' },
   { id: 'wait', label: 'Wait' },
+  { id: 'subs', label: 'Subs' },
   { id: 'more', label: 'More' }
 ]
 const AUTOSAVE_MS = 500
+const SUBTASK_DRAG_THRESHOLD_PX = 6
 
-const emptyBoard = () => ({ version: 6, revision: 0, tasks: [] })
+const emptyBoard = () => ({ version: 7, revision: 0, tasks: [] })
 
 // Hermes Desktop evaluates disk plugins as one uncompiled ESM module loaded
 // from a blob URL. Keep this formatter inline: relative imports such as
@@ -70,6 +72,9 @@ function buildWorkPrompt(task) {
     `Execution mode: ${task.executionMode || 'manual'}`,
     `Approval state: ${task.approvalState || 'not-required'}`,
     task.artefacts?.length ? `Artefacts:\n${task.artefacts.map(value => `- ${value}`).join('\n')}` : null,
+    task.subtasks?.length
+      ? `Subtasks:\n${task.subtasks.map(item => `- [${item.done ? 'x' : ' '}] ${item.title}`).join('\n')}`
+      : null,
     task.source ? `Origin: ${task.source}${task.externalId ? ` (${task.externalId})` : ''}` : null
   ].filter(Boolean)
 
@@ -287,6 +292,19 @@ function normaliseTask(task) {
     occurrenceNumber: Number.isInteger(task.occurrenceNumber) ? task.occurrenceNumber : null,
     sessionId: typeof task.sessionId === 'string' && task.sessionId ? task.sessionId : null,
     sessionState: ['active', 'completed'].includes(task.sessionState) ? task.sessionState : null,
+    subtasks: Array.isArray(task.subtasks)
+      ? task.subtasks
+        .filter(item => item && typeof item === 'object' && typeof item.title === 'string')
+        .map(item => ({
+          id: typeof item.id === 'string' && item.id ? item.id : makeId(),
+          title: item.title.trim().slice(0, 500),
+          done: item.done === true
+        }))
+      : [],
+    subtaskCount: Number.isInteger(task.subtaskCount) ? task.subtaskCount : (Array.isArray(task.subtasks) ? task.subtasks.length : 0),
+    subtaskDoneCount: Number.isInteger(task.subtaskDoneCount)
+      ? task.subtaskDoneCount
+      : (Array.isArray(task.subtasks) ? task.subtasks.filter(item => item && item.done === true).length : 0),
     source: typeof task.source === 'string' && task.source ? task.source : null,
     externalId: typeof task.externalId === 'string' && task.externalId ? task.externalId : null,
     createdAt: task.createdAt ?? new Date().toISOString(),
@@ -308,7 +326,7 @@ function normaliseBoard(value) {
     keptNow = true
   }
   return {
-    version: Number(value.version) || 6,
+    version: Number(value.version) || 7,
     revision: Number(value.revision) || 0,
     tasks
   }
@@ -762,20 +780,112 @@ function useRemoteBoard(ctx) {
     [commitMutation, ctx, enqueue, invalidateRelated]
   )
 
+  const addSubtask = useCallback(
+    (id, title) => enqueue(async () => {
+      const snapshot = boardRef.current
+      try {
+        const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}/subtasks?envelope=result`, {
+          method: 'POST',
+          body: { title, expectedRevision: snapshot.revision, eventSource: 'desktop' },
+          timeoutMs: 8000
+        })
+        commitMutation(remote)
+        return true
+      } catch (error) {
+        host.notifyError(error, 'Could not add the subtask')
+        return false
+      } finally {
+        invalidateRelated(id)
+      }
+    }),
+    [commitMutation, ctx, enqueue, invalidateRelated]
+  )
+
+  const updateSubtask = useCallback(
+    (id, subtaskId, changes) => enqueue(async () => {
+      const snapshot = boardRef.current
+      try {
+        const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}/subtasks/${encodeURIComponent(subtaskId)}?envelope=result`, {
+          method: 'PATCH',
+          body: { ...changes, expectedRevision: snapshot.revision, eventSource: 'desktop' },
+          timeoutMs: 8000
+        })
+        commitMutation(remote)
+        return true
+      } catch (error) {
+        host.notifyError(error, 'Could not update the subtask')
+        return false
+      } finally {
+        invalidateRelated(id)
+      }
+    }),
+    [commitMutation, ctx, enqueue, invalidateRelated]
+  )
+
+  const removeSubtask = useCallback(
+    (id, subtaskId) => enqueue(async () => {
+      const snapshot = boardRef.current
+      try {
+        const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}/subtasks/${encodeURIComponent(subtaskId)}?expectedRevision=${snapshot.revision}&envelope=result`, {
+          method: 'DELETE',
+          timeoutMs: 8000
+        })
+        commitMutation(remote)
+        return true
+      } catch (error) {
+        host.notifyError(error, 'Could not delete the subtask')
+        return false
+      } finally {
+        invalidateRelated(id)
+      }
+    }),
+    [commitMutation, ctx, enqueue, invalidateRelated]
+  )
+
+  const reorderSubtask = useCallback(
+    (id, subtaskId, target) => enqueue(async () => {
+      const snapshot = boardRef.current
+      try {
+        const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}/subtasks/${encodeURIComponent(subtaskId)}/reorder?envelope=result`, {
+          method: 'POST',
+          body: {
+            beforeId: target.beforeId || null,
+            afterId: target.afterId || null,
+            expectedRevision: snapshot.revision,
+            eventSource: 'desktop'
+          },
+          timeoutMs: 8000
+        })
+        commitMutation(remote)
+        return true
+      } catch (error) {
+        host.notifyError(error, 'Could not reorder the subtask')
+        return false
+      } finally {
+        invalidateRelated(id)
+      }
+    }),
+    [commitMutation, ctx, enqueue, invalidateRelated]
+  )
+
   return {
     add,
     adding,
+    addSubtask,
     board,
     completeSession,
     connection: query.isError ? 'offline' : query.data ? 'online' : 'connecting',
     cycleEstimate,
     reorder,
+    reorderSubtask,
     error: query.error ? errorText(query.error) : '',
     linkSession,
     pendingIds,
     refresh: () => query.refetch(),
     remove,
-    update
+    removeSubtask,
+    update,
+    updateSubtask
   }
 }
 
@@ -975,7 +1085,127 @@ function changedTaskDetails(initial, current) {
   return changes
 }
 
-function TaskDetails({ ctx, task, disabled, update, remove, close, completeSession }) {
+function SubtaskEditor({ task, disabled, addSubtask, updateSubtask, removeSubtask, reorderSubtask }) {
+  const [draft, setDraft] = useState('')
+  const items = task.subtasks || []
+
+  const addItem = async () => {
+    const title = draft.trim()
+    if (!title) return
+    const saved = await addSubtask(task.id, title)
+    if (saved) setDraft('')
+  }
+
+  const startReorder = (item, event) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    const startY = event.clientY
+    const onMove = moveEvent => {
+      if (Math.abs(moveEvent.clientY - startY) < SUBTASK_DRAG_THRESHOLD_PX) return
+    }
+    const onUp = upEvent => {
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onUp, true)
+      const row = document.elementFromPoint(upEvent.clientX, upEvent.clientY)?.closest('[data-subtask-id]')
+      const targetId = row?.getAttribute('data-subtask-id')
+      if (!targetId || targetId === item.id) return
+      const targetIndex = items.findIndex(entry => entry.id === targetId)
+      if (targetIndex < 0) return
+      const beforeId = items[targetIndex].id
+      if (upEvent.clientY < (row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2)) {
+        void reorderSubtask(task.id, item.id, { beforeId, afterId: targetIndex > 0 ? items[targetIndex - 1].id : null })
+      } else {
+        const next = items[targetIndex + 1]
+        void reorderSubtask(task.id, item.id, { afterId: beforeId, beforeId: next ? next.id : null })
+      }
+    }
+    window.addEventListener('pointermove', onMove, true)
+    window.addEventListener('pointerup', onUp, true)
+  }
+
+  return jsxs('div', {
+    className: 'mt-1',
+    children: [
+      items.map(item => jsxs('div', {
+        'data-subtask-id': item.id,
+        className: 'mb-1 flex items-center gap-1',
+        children: [
+          jsx('button', {
+            'aria-label': 'Reorder subtask',
+            className: 'shrink-0 cursor-grab px-0.5 text-[0.6875rem] text-(--ui-text-quaternary)',
+            disabled,
+            onPointerDown: event => startReorder(item, event),
+            type: 'button',
+            children: '::'
+          }),
+          jsx('input', {
+            'aria-label': item.done ? 'Mark subtask incomplete' : 'Mark subtask complete',
+            checked: item.done,
+            disabled,
+            onChange: event => void updateSubtask(task.id, item.id, { done: event.target.checked }),
+            type: 'checkbox'
+          }),
+          jsx(Input, {
+            'aria-label': 'Subtask title',
+            className: 'h-7 min-w-0 flex-1 text-xs',
+            disabled,
+            maxLength: 500,
+            onBlur: event => {
+              const title = event.target.value.trim()
+              if (title && title !== item.title) void updateSubtask(task.id, item.id, { title })
+            },
+            onKeyDown: event => {
+              if (event.key === 'Enter') event.currentTarget.blur()
+            },
+            style: { borderColor: 'color-mix(in srgb, var(--ui-text-primary) 22%, transparent)' },
+            defaultValue: item.title
+          }),
+          jsx(Button, {
+            'aria-label': 'Delete subtask',
+            disabled,
+            onClick: () => void removeSubtask(task.id, item.id),
+            size: 'icon-xs',
+            type: 'button',
+            variant: 'ghost',
+            children: jsx(icons.X, { className: 'size-3.5' })
+          })
+        ]
+      }, item.id)),
+      jsxs('div', {
+        className: 'mt-1 flex items-center gap-1',
+        children: [
+          jsx(Input, {
+            'aria-label': 'New subtask',
+            className: 'h-7 min-w-0 flex-1 text-xs',
+            disabled,
+            maxLength: 500,
+            onChange: event => setDraft(event.target.value),
+            onKeyDown: event => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                void addItem()
+              }
+            },
+            placeholder: 'Add a subtask',
+            style: { borderColor: 'color-mix(in srgb, var(--ui-text-primary) 22%, transparent)' },
+            value: draft
+          }),
+          jsx(Button, {
+            disabled: disabled || !draft.trim(),
+            onClick: () => void addItem(),
+            size: 'xs',
+            type: 'button',
+            variant: 'secondary',
+            children: 'Add'
+          })
+        ]
+      })
+    ]
+  })
+}
+
+function TaskDetails({ ctx, task, disabled, update, remove, close, completeSession, addSubtask, updateSubtask, removeSubtask, reorderSubtask }) {
   const activeProfile = useValue(host.state.profile)
   const initialDraftRef = useRef(null)
   if (initialDraftRef.current === null) {
@@ -1290,7 +1520,26 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
     }, 'actions')
   ]
 
-  const tabFields = detailTab === 'plan' ? planFields : detailTab === 'wait' ? waitFields : detailTab === 'more' ? moreFields : workFields
+  const subsFields = [
+    jsx(SubtaskEditor, {
+      addSubtask,
+      disabled,
+      removeSubtask,
+      reorderSubtask,
+      task,
+      updateSubtask
+    }, 'subs')
+  ]
+
+  const tabFields = detailTab === 'plan'
+    ? planFields
+    : detailTab === 'wait'
+      ? waitFields
+      : detailTab === 'subs'
+        ? subsFields
+        : detailTab === 'more'
+          ? moreFields
+          : workFields
 
   return jsxs('form', {
     className: 'mt-2 rounded-md border border-(--ui-stroke-secondary) p-2',
@@ -1344,8 +1593,9 @@ function PriorityPill({ priority }) {
   })
 }
 
-function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pending, workingId, workWithHermes, prominent = false, reason }) {
+function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pending, workingId, workWithHermes, addSubtask, updateSubtask, removeSubtask, reorderSubtask, prominent = false, reason }) {
   const [editing, setEditing] = useState(false)
+  const [subtasksOpen, setSubtasksOpen] = useState(false)
   const disabled = pending || workingId === task.id
   const due = dueLabel(task)
   const draggable = task.status !== 'done'
@@ -1419,6 +1669,18 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
                 className: 'mt-0.5 line-clamp-2 break-words text-[0.625rem] leading-4 text-(--ui-text-tertiary)',
                 children: task.brief.replace(/\s+/g, ' ').trim()
               }),
+              task.subtaskCount > 0 && jsxs('button', {
+                className: 'mt-0.5 inline-flex items-center gap-1 text-[0.625rem] text-(--ui-text-quaternary)',
+                onClick: event => {
+                  event.stopPropagation()
+                  setSubtasksOpen(value => !value)
+                },
+                type: 'button',
+                children: [
+                  jsx(subtasksOpen ? icons.ChevronDown : icons.ChevronRight, { className: 'size-3' }),
+                  `${task.subtaskDoneCount || 0}/${task.subtaskCount}`
+                ]
+              }),
               (reason || task.project || task.owner || task.nextAction || task.recurrence) && jsx('div', {
                 className: 'mt-0.5 truncate text-[0.625rem] text-(--ui-text-quaternary)',
                 children: [reason, task.project, task.owner, task.nextAction, task.recurrenceRule || task.recurrence].filter(Boolean).join(' · ')
@@ -1453,7 +1715,33 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
           })
         ]
       }),
-      editing && jsx(TaskDetails, { close: () => setEditing(false), completeSession, ctx, disabled, remove, task, update }),
+      editing && jsx(TaskDetails, {
+        addSubtask,
+        close: () => setEditing(false),
+        completeSession,
+        ctx,
+        disabled,
+        remove,
+        removeSubtask,
+        reorderSubtask,
+        task,
+        update,
+        updateSubtask
+      }),
+      subtasksOpen && task.subtaskCount > 0 && jsxs('div', {
+        className: 'mt-1',
+        style: { paddingLeft: 4 },
+        children: [
+          (task.subtasks || []).filter(item => !item.done).map(item => jsx('div', {
+            className: 'truncate text-[0.625rem] leading-4 text-(--ui-text-tertiary)',
+            children: item.title.replace(/\s+/g, ' ').trim()
+          }, item.id)),
+          (task.subtaskDoneCount || 0) > 0 && jsx('div', {
+            className: 'text-[0.625rem] text-(--ui-text-quaternary)',
+            children: `${task.subtaskDoneCount} complete`
+          })
+        ]
+      }),
       task.status !== 'done' && jsxs('div', {
         className: 'mt-1.5 flex flex-wrap items-center gap-1',
         children: [
@@ -1780,13 +2068,17 @@ function TodoPane({ ctx }) {
       : `v0.3.0-dev · Offline: ${remote.error || 'request failed'}`
 
   const rowProps = {
+    addSubtask: remote.addSubtask,
     completeSession: remote.completeSession,
     ctx,
     cycleEstimate: remote.cycleEstimate,
     pending: false,
     remove: remote.remove,
+    removeSubtask: remote.removeSubtask,
     reorder: remote.reorder,
+    reorderSubtask: remote.reorderSubtask,
     update: remote.update,
+    updateSubtask: remote.updateSubtask,
     workingId,
     workWithHermes
   }
