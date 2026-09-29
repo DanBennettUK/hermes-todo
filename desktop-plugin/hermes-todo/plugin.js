@@ -1114,7 +1114,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
     }, 'status'),
     jsx(FieldLabel, { children: 'Deadline' }, 'due-label'),
     jsxs('div', {
-      className: 'mb-1 flex gap-1',
+      className: 'mb-1 flex items-center gap-1',
       children: [
         jsx(ChoiceButton, {
           active: dueMode === 'date',
@@ -1136,26 +1136,26 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
             if (!timedDraft && /^\d{4}-\d{2}-\d{2}$/.test(dueDraft || '')) setTimedDraft(`${dueDraft}T12:00`)
           },
           children: 'Timed'
-        })
+        }),
+        dueMode === 'timed'
+          ? jsx(Input, {
+              'aria-label': 'Timed deadline',
+              className: 'h-7 min-w-0 flex-1 text-xs',
+              disabled,
+              onChange: event => setTimedDraft(event.target.value),
+              type: 'datetime-local',
+              value: timedDraft
+            }, 'timed')
+          : jsx(Input, {
+              'aria-label': 'Due date',
+              className: 'h-7 min-w-0 flex-1 text-xs',
+              disabled,
+              onChange: event => setDueDraft(event.target.value),
+              type: 'date',
+              value: dueDraft
+            }, 'date')
       ]
-    }, 'due-mode'),
-    dueMode === 'timed'
-      ? jsx(Input, {
-          'aria-label': 'Timed deadline',
-          className: 'h-7 text-xs',
-          disabled,
-          onChange: event => setTimedDraft(event.target.value),
-          type: 'datetime-local',
-          value: timedDraft
-        }, 'timed')
-      : jsx(Input, {
-          'aria-label': 'Due date',
-          className: 'h-7 text-xs',
-          disabled,
-          onChange: event => setDueDraft(event.target.value),
-          type: 'date',
-          value: dueDraft
-        }, 'date'),
+    }, 'due-row'),
     jsx(FieldLabel, { children: 'Priority' }, 'pri-label'),
     jsx('div', {
       className: 'flex flex-wrap gap-1',

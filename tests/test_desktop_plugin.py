@@ -52,6 +52,8 @@ class HermesTodoDesktopContractTests(unittest.TestCase):
         self.assertIn("SegmentedControl", source)
         self.assertIn("icons.Save", source)
         self.assertIn("const DETAIL_TABS", source)
+        self.assertIn("'due-row'", source)
+        self.assertIn("'aria-label': 'Due date'", source)
         self.assertIn("initial.dueMode !== current.dueMode", source)
         self.assertIn("artefacts: lines(artefactsDraft)", source)
         self.assertIn("closureEvidence: lines(closureEvidenceDraft)", source)
