@@ -1074,6 +1074,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
       disabled,
       maxLength: 500,
       onChange: event => setTitleDraft(event.target.value),
+      style: { borderColor: 'color-mix(in srgb, var(--ui-text-primary) 22%, transparent)' },
       value: titleDraft
     }, 'title'),
     jsx(TextAreaField, { disabled, label: 'Brief and decisions', maxLength: 8000, onChange: event => setBriefDraft(event.target.value), placeholder: 'Durable context for re-entry', value: briefDraft }, 'brief'),
