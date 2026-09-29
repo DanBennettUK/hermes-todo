@@ -1823,29 +1823,6 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
                 className: 'mt-0.5 truncate text-[0.625rem] text-(--ui-text-quaternary)',
                 children: [reason, task.project, task.owner, task.nextAction, task.recurrenceRule || task.recurrence].filter(Boolean).join(' · ')
               })
-<<<<<<< HEAD
-            ]
-          }),
-          jsxs('div', {
-            className: 'flex shrink-0 items-center gap-0.5 self-start',
-            children: [
-              jsx(IconButton, {
-                disabled,
-                expanded: editing,
-                icon: icons.MoreHorizontal,
-                label: 'Plan, status and due date',
-                onClick: () => setEditing(value => !value)
-              }),
-              task.status === 'done'
-                ? jsx(IconButton, { disabled, icon: icons.RefreshCw, label: 'Reopen', onClick: () => void update(task.id, { status: 'open', waitingOn: null, reviewDate: null, blocker: null }) })
-                : jsx(IconButton, { disabled, icon: icons.Check, label: 'Complete', onClick: () => {
-                    haptic('success')
-                    void update(task.id, { status: 'done' })
-                  } })
-            ]
-          })
-=======
->>>>>>> 79bd5e9 (fix: put lane buttons on a full-width due row)
         ]
       }),
       editing && jsx(TaskDetails, {
