@@ -14,24 +14,34 @@ try:
     from .hermes_todo_store import (
         BoardError,
         RevisionConflict,
+        create_subtask,
         create_task,
+        delete_subtask,
         get_board,
         get_history,
         get_task,
+        reorder_subtask,
         reorder_task,
         search_tasks,
+        sort_subtasks,
+        update_subtask,
         update_task,
     )
 except ImportError:  # Direct source-tree execution and tests.
     from hermes_todo_store import (
         BoardError,
         RevisionConflict,
+        create_subtask,
         create_task,
+        delete_subtask,
         get_board,
         get_history,
         get_task,
+        reorder_subtask,
         reorder_task,
         search_tasks,
+        sort_subtasks,
+        update_subtask,
         update_task,
     )
 
@@ -50,18 +60,25 @@ SCHEMA = {
         "closure_condition, waiting_on, blocker, review_date, estimate), "
         "reorder (move a task within/between categories before or after a "
         "neighbour), start (make a task the single Now item), done (complete "
-        "with optional closure note/evidence). Deleting is intentionally "
-        "not supported."
+        "with optional closure note/evidence), subtask_create, subtask_update, "
+        "subtask_delete, subtask_reorder, and subtask_sort. Parent-task delete "
+        "is intentionally not supported."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["list", "get", "create", "update", "reorder", "start", "done"],
+                "enum": [
+                    "list", "get", "create", "update", "reorder", "start", "done",
+                    "subtask_create", "subtask_update", "subtask_delete", "subtask_reorder", "subtask_sort",
+                ],
                 "description": "Board operation to perform.",
             },
-            "task_id": {"type": "string", "description": "Task id for get/update/reorder/start/done."},
+            "task_id": {"type": "string", "description": "Task id for get/update/reorder/start/done and all subtask actions."},
+            "subtask_id": {"type": "string", "description": "Subtask id for subtask_update/subtask_delete/subtask_reorder."},
+            "subtask_title": {"type": "string", "description": "subtask_create/subtask_update: checklist title, 1-500 characters."},
+            "done": {"type": "boolean", "description": "subtask_update: true marks complete, false reopens."},
             "query": {"type": "string", "description": "list: text search across title and context fields."},
             "category": {"type": "string", "enum": _CATEGORIES, "description": "Category filter or target (today/tomorrow/this-week/this-month/soon)."},
             "plan": {"type": "string", "enum": _PLANS, "description": "Plan filter or value (now/today/later)."},
@@ -70,8 +87,8 @@ SCHEMA = {
             "estimate": {"type": "integer", "description": "create/update: minutes, 5-480."},
             "priority": {"type": "integer", "description": "create/update: 1-4 (P1 highest), omit or null for normal."},
             "position": {"type": "number", "description": "create/update: explicit sort position."},
-            "before_id": {"type": "string", "description": "reorder: place the task before this task id."},
-            "after_id": {"type": "string", "description": "reorder: place the task after this task id."},
+            "before_id": {"type": "string", "description": "reorder / subtask_reorder: place the item before this id."},
+            "after_id": {"type": "string", "description": "reorder / subtask_reorder: place the item after this id."},
             "due_date": {"type": "string", "description": "create/update: all-day due date YYYY-MM-DD."},
             "due_at": {"type": "string", "description": "create/update: timed due ISO datetime."},
             "due_timezone": {"type": "string", "description": "create/update: IANA timezone for timed due."},
@@ -98,9 +115,15 @@ def _compact_task(task: dict[str, Any]) -> dict[str, Any]:
         "id", "title", "plan", "status", "category", "position", "estimate",
         "priority", "dueDate", "dueAt", "project", "owner", "inbox",
         "brief", "nextAction", "closureCondition", "waitingOn", "blocker",
-        "reviewDate", "sessionId", "sessionState",
+        "reviewDate", "sessionId", "sessionState", "subtaskCount", "subtaskDoneCount",
     )
-    return {key: task.get(key) for key in keys if task.get(key) is not None}
+    compact = {key: task.get(key) for key in keys if task.get(key) is not None}
+    if task.get("subtasks"):
+        compact["subtasks"] = [
+            {"id": item["id"], "title": item["title"], "done": item["done"]}
+            for item in task["subtasks"]
+        ]
+    return compact
 
 
 def _revision_kwargs(args: dict[str, Any]) -> dict[str, Any]:
@@ -214,6 +237,76 @@ def _apply(args: dict[str, Any]) -> dict[str, Any]:
             event_source="tool",
             return_board=False,
             **_revision_kwargs(args),
+        )
+        result["task"] = _compact_task(result["task"])
+        return result
+    if action == "subtask_create":
+        if not args.get("subtask_title"):
+            raise BoardError("subtask_create requires subtask_title")
+        result = create_subtask(
+            args["task_id"],
+            args["subtask_title"],
+            done=bool(args.get("done", False)),
+            expected_revision=int(args["expected_revision"]) if args.get("expected_revision") is not None else None,
+            event_source="tool",
+            return_board=False,
+        )
+        result["task"] = _compact_task(result["task"])
+        if result.get("subtask"):
+            result["subtask"] = {
+                "id": result["subtask"]["id"],
+                "title": result["subtask"]["title"],
+                "done": result["subtask"]["done"],
+            }
+        return result
+    if action == "subtask_update":
+        if not args.get("subtask_id"):
+            raise BoardError("subtask_update requires subtask_id")
+        if args.get("subtask_title") is None and args.get("done") is None:
+            raise BoardError("subtask_update requires subtask_title or done")
+        result = update_subtask(
+            args["task_id"],
+            args["subtask_id"],
+            title=args.get("subtask_title"),
+            done=args.get("done"),
+            expected_revision=int(args["expected_revision"]) if args.get("expected_revision") is not None else None,
+            event_source="tool",
+            return_board=False,
+        )
+        result["task"] = _compact_task(result["task"])
+        return result
+    if action == "subtask_delete":
+        if not args.get("subtask_id"):
+            raise BoardError("subtask_delete requires subtask_id")
+        result = delete_subtask(
+            args["task_id"],
+            args["subtask_id"],
+            expected_revision=int(args["expected_revision"]) if args.get("expected_revision") is not None else None,
+            event_source="tool",
+            return_board=False,
+        )
+        result["task"] = _compact_task(result["task"])
+        return result
+    if action == "subtask_reorder":
+        if not args.get("subtask_id"):
+            raise BoardError("subtask_reorder requires subtask_id")
+        result = reorder_subtask(
+            args["task_id"],
+            args["subtask_id"],
+            before_id=args.get("before_id"),
+            after_id=args.get("after_id"),
+            expected_revision=int(args["expected_revision"]) if args.get("expected_revision") is not None else None,
+            event_source="tool",
+            return_board=False,
+        )
+        result["task"] = _compact_task(result["task"])
+        return result
+    if action == "subtask_sort":
+        result = sort_subtasks(
+            args["task_id"],
+            expected_revision=int(args["expected_revision"]) if args.get("expected_revision") is not None else None,
+            event_source="tool",
+            return_board=False,
         )
         result["task"] = _compact_task(result["task"])
         return result

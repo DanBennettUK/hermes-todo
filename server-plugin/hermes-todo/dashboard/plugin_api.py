@@ -26,9 +26,14 @@ from hermes_todo_store import (  # noqa: E402
     get_history,
     get_task,
     import_tasks,
+    create_subtask,
+    delete_subtask,
     link_task_session,
+    reorder_subtask,
     reorder_task,
     search_tasks,
+    sort_subtasks,
+    update_subtask,
     update_task,
 )
 
@@ -130,6 +135,7 @@ class ImportBody(StrictModel):
 class SessionLinkBody(StrictModel):
     session_id: str = Field(alias="sessionId", min_length=1, max_length=300)
     start_now: bool = Field(default=True, alias="startNow")
+    replace_active: bool = Field(default=False, alias="replaceActive")
     expected_revision: int | None = Field(default=None, alias="expectedRevision", ge=0)
     actor: str | None = Field(default=None, max_length=200)
     event_source: str | None = Field(default=None, alias="eventSource", max_length=100)
@@ -137,6 +143,30 @@ class SessionLinkBody(StrictModel):
 
 class ReorderBody(StrictModel):
     category: str | None = None
+    before_id: str | None = Field(default=None, alias="beforeId", min_length=1, max_length=200)
+    after_id: str | None = Field(default=None, alias="afterId", min_length=1, max_length=200)
+    expected_revision: int | None = Field(default=None, alias="expectedRevision", ge=0)
+    actor: str | None = Field(default=None, max_length=200)
+    event_source: str | None = Field(default=None, alias="eventSource", max_length=100)
+
+
+class SubtaskCreateBody(StrictModel):
+    title: str = Field(min_length=1, max_length=500)
+    done: bool = False
+    expected_revision: int | None = Field(default=None, alias="expectedRevision", ge=0)
+    actor: str | None = Field(default=None, max_length=200)
+    event_source: str | None = Field(default=None, alias="eventSource", max_length=100)
+
+
+class SubtaskPatchBody(StrictModel):
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    done: bool | None = None
+    expected_revision: int | None = Field(default=None, alias="expectedRevision", ge=0)
+    actor: str | None = Field(default=None, max_length=200)
+    event_source: str | None = Field(default=None, alias="eventSource", max_length=100)
+
+
+class SubtaskReorderBody(StrictModel):
     before_id: str | None = Field(default=None, alias="beforeId", min_length=1, max_length=200)
     after_id: str | None = Field(default=None, alias="afterId", min_length=1, max_length=200)
     expected_revision: int | None = Field(default=None, alias="expectedRevision", ge=0)
@@ -344,6 +374,7 @@ def link_session(task_id: str, body: SessionLinkBody, envelope: str = "board"):
             task_id,
             payload["session_id"],
             start_now=payload["start_now"],
+            replace_active=payload["replace_active"],
             expected_revision=expected_revision,
             actor=actor,
             event_source=event_source,
@@ -411,6 +442,115 @@ def complete_and_follow_up(
             event_source=event_source,
             return_board=_envelope(envelope),
             **payload,
+        )
+    except RevisionConflict as exc:
+        raise _conflict(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    except BoardError as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.post("/tasks/{task_id}/subtasks")
+def add_subtask(task_id: str, body: SubtaskCreateBody, envelope: str = "board"):
+    payload = body.model_dump()
+    expected_revision, actor, event_source = _meta(payload)
+    try:
+        return create_subtask(
+            task_id,
+            payload["title"],
+            done=payload["done"],
+            expected_revision=expected_revision,
+            actor=actor,
+            event_source=event_source,
+            return_board=_envelope(envelope),
+        )
+    except RevisionConflict as exc:
+        raise _conflict(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    except BoardError as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.patch("/tasks/{task_id}/subtasks/{subtask_id}")
+def patch_subtask(task_id: str, subtask_id: str, body: SubtaskPatchBody, envelope: str = "board"):
+    payload = body.model_dump(exclude_unset=True)
+    expected_revision, actor, event_source = _meta(payload)
+    try:
+        return update_subtask(
+            task_id,
+            subtask_id,
+            title=payload.get("title"),
+            done=payload.get("done"),
+            expected_revision=expected_revision,
+            actor=actor,
+            event_source=event_source,
+            return_board=_envelope(envelope),
+        )
+    except RevisionConflict as exc:
+        raise _conflict(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Subtask not found") from exc
+    except BoardError as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.delete("/tasks/{task_id}/subtasks/{subtask_id}")
+def remove_subtask(
+    task_id: str,
+    subtask_id: str,
+    expected_revision: int | None = Query(default=None, alias="expectedRevision", ge=0),
+    envelope: str = "board",
+):
+    try:
+        return delete_subtask(
+            task_id,
+            subtask_id,
+            expected_revision=expected_revision,
+            event_source="api",
+            return_board=_envelope(envelope),
+        )
+    except RevisionConflict as exc:
+        raise _conflict(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Subtask not found") from exc
+
+
+@router.post("/tasks/{task_id}/subtasks/{subtask_id}/reorder")
+def reorder_one_subtask(task_id: str, subtask_id: str, body: SubtaskReorderBody, envelope: str = "board"):
+    payload = body.model_dump()
+    expected_revision, actor, event_source = _meta(payload)
+    try:
+        return reorder_subtask(
+            task_id,
+            subtask_id,
+            before_id=payload["before_id"],
+            after_id=payload["after_id"],
+            expected_revision=expected_revision,
+            actor=actor,
+            event_source=event_source,
+            return_board=_envelope(envelope),
+        )
+    except RevisionConflict as exc:
+        raise _conflict(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Subtask not found") from exc
+    except BoardError as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.post("/tasks/{task_id}/subtasks/sort")
+def sort_task_subtasks(task_id: str, body: MutationBody, envelope: str = "board"):
+    payload = body.model_dump()
+    expected_revision, actor, event_source = _meta(payload)
+    try:
+        return sort_subtasks(
+            task_id,
+            expected_revision=expected_revision,
+            actor=actor,
+            event_source=event_source,
+            return_board=_envelope(envelope),
         )
     except RevisionConflict as exc:
         raise _conflict(exc) from exc
