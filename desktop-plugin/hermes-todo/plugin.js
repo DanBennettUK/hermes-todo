@@ -1606,6 +1606,9 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
   const disabled = pending || workingId === task.id
   const due = dueLabel(task)
   const draggable = task.status !== 'done'
+  const canStartNow = task.status === 'open' && (task.plan !== 'now' || task.inbox)
+  const canWorkWithHermes = task.status === 'open' || (task.sessionId && task.sessionState === 'active')
+  const waitHint = ['waiting', 'blocked'].includes(task.status) && !(task.sessionId && task.sessionState === 'active')
 
   const handlePointerDown = event => {
     if (!draggable) return
@@ -1657,40 +1660,113 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
     onPointerDown: handlePointerDown,
     children: [
       jsxs('div', {
-        className: 'flex min-w-0 items-start gap-x-2',
+        className: 'min-w-0',
         children: [
           jsxs('div', {
-            className: 'min-w-0 flex-1',
+            className: 'flex min-w-0 items-start gap-x-2',
             children: [
               jsxs('div', {
-                className: 'flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5',
+                className: cn(
+                  'min-w-0 flex-1 break-words [overflow-wrap:anywhere] text-xs leading-5 text-(--ui-text-primary)',
+                  task.status === 'done' && 'text-(--ui-text-quaternary) line-through'
+                ),
                 children: [
-                  jsxs('div', {
-                    className: cn(
-                      'max-w-full break-words [overflow-wrap:anywhere] text-xs leading-5 text-(--ui-text-primary)',
-                      task.status === 'done' && 'text-(--ui-text-quaternary) line-through'
-                    ),
-                    style: { width: 'max-content', maxWidth: '100%', flexShrink: 0 },
-                    children: [
-                      PRIORITY_PILL[task.priority] ? jsx(PriorityPill, { priority: task.priority }) : null,
-                      task.title
-                    ]
-                  }),
-                  jsxs('div', {
-                    className: 'flex shrink-0 items-baseline gap-0.5 whitespace-nowrap',
-                    children: [
-                      due ? jsx('span', {
-                        className: cn(
-                          'text-[0.625rem] text-(--ui-text-quaternary)',
-                          due.startsWith('Overdue') && 'font-medium text-(--ui-text-secondary)'
-                        ),
-                        children: `${due} ·`
-                      }, 'due-label') : null,
-                      jsx(EstimateButton, { disabled, minutes: task.estimate, onClick: () => void cycleEstimate(task) })
-                    ]
-                  })
+                  PRIORITY_PILL[task.priority] ? jsx(PriorityPill, { priority: task.priority }) : null,
+                  task.title
                 ]
               }),
+              jsxs('div', {
+                className: 'flex shrink-0 items-center gap-0.5 self-start',
+                children: [
+                  jsx(IconButton, {
+                    disabled,
+                    expanded: editing,
+                    icon: icons.MoreHorizontal,
+                    label: 'Plan, status and due date',
+                    onClick: () => setEditing(value => !value)
+                  }),
+                  task.status === 'done'
+                    ? jsx(IconButton, { disabled, icon: icons.RefreshCw, label: 'Reopen', onClick: () => void update(task.id, { status: 'open', waitingOn: null, reviewDate: null, blocker: null }) })
+                    : jsx('span', {
+                        'data-todo-complete': task.id,
+                        children: jsx(IconButton, {
+                          disabled,
+                          icon: confirmComplete ? icons.CheckCircle2 : icons.Check,
+                          label: confirmComplete ? 'Confirm complete' : 'Complete',
+                          tone: confirmComplete ? 'accent' : 'quiet',
+                          onClick: () => {
+                            if (!confirmComplete) {
+                              setConfirmComplete(true)
+                              return
+                            }
+                            clearConfirmComplete()
+                            haptic('success')
+                            void update(task.id, { status: 'done' })
+                          }
+                        })
+                      })
+                ]
+              })
+            ]
+          }),
+          jsxs('div', {
+            'data-todo-due-row': '',
+            className: cn(
+              'mt-0.5 flex w-full items-center gap-1',
+              prominent ? 'justify-start' : 'justify-between'
+            ),
+            children: [
+              jsxs('div', {
+                className: 'flex shrink-0 items-baseline gap-0.5 whitespace-nowrap',
+                children: [
+                  due ? jsx('span', {
+                    className: cn(
+                      'text-[0.625rem] text-(--ui-text-quaternary)',
+                      due.startsWith('Overdue') && 'font-medium text-(--ui-text-secondary)'
+                    ),
+                    children: `${due} ·`
+                  }, 'due-label') : null,
+                  jsx(EstimateButton, { disabled, minutes: task.estimate, onClick: () => void cycleEstimate(task) })
+                ]
+              }),
+              task.status !== 'done' && jsxs('div', {
+                className: 'flex shrink-0 flex-wrap items-center justify-end gap-1',
+                children: [
+                  canStartNow && jsx(Button, {
+                    disabled,
+                    onClick: () => void update(task.id, { plan: 'now', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }),
+                    size: 'xs',
+                    type: 'button',
+                    variant: 'secondary',
+                    children: 'Start now'
+                  }),
+                  canWorkWithHermes && jsx(Button, {
+                    className: cn(prominent ? '' : 'opacity-80 group-hover:opacity-100'),
+                    disabled,
+                    onClick: () => void workWithHermes(task),
+                    size: 'xs',
+                    type: 'button',
+                    variant: prominent ? 'default' : 'secondary',
+                    children: jsxs('span', {
+                      className: 'inline-flex items-center gap-1',
+                      children: [
+                        jsx(icons.MessageCircle, { className: 'size-3' }),
+                        workingId === task.id
+                          ? 'Sending…'
+                          : task.sessionId && task.sessionState === 'active'
+                            ? task.status === 'open' ? 'Resume with Hermes' : 'Open linked session'
+                            : 'Work with Hermes'
+                      ]
+                    })
+                  }),
+                  waitHint && jsx('span', {
+                    className: 'text-[0.625rem] text-(--ui-text-quaternary)',
+                    children: task.status === 'blocked' ? 'Clear the blocker to start Hermes.' : 'Reopen when the wait is over.'
+                  })
+                ]
+              })
+            ]
+          }),
               task.brief && jsx('div', {
                 className: 'mt-0.5 line-clamp-2 break-words text-[0.625rem] leading-4 text-(--ui-text-tertiary)',
                 children: task.brief.replace(/\s+/g, ' ').trim()
@@ -1747,6 +1823,7 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
                 className: 'mt-0.5 truncate text-[0.625rem] text-(--ui-text-quaternary)',
                 children: [reason, task.project, task.owner, task.nextAction, task.recurrenceRule || task.recurrence].filter(Boolean).join(' · ')
               })
+<<<<<<< HEAD
             ]
           }),
           jsxs('div', {
@@ -1767,6 +1844,8 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
                   } })
             ]
           })
+=======
+>>>>>>> 79bd5e9 (fix: put lane buttons on a full-width due row)
         ]
       }),
       editing && jsx(TaskDetails, {
@@ -1781,42 +1860,6 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
         task,
         update,
         updateSubtask
-      }),
-      task.status !== 'done' && jsxs('div', {
-        className: 'mt-1.5 flex flex-wrap items-center gap-1',
-        children: [
-          task.status === 'open' && (task.plan !== 'now' || task.inbox) && jsx(Button, {
-            disabled,
-            onClick: () => void update(task.id, { plan: 'now', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }),
-            size: 'xs',
-            type: 'button',
-            variant: 'secondary',
-            children: 'Start now'
-          }),
-          (task.status === 'open' || (task.sessionId && task.sessionState === 'active')) && jsx(Button, {
-            className: cn(prominent ? '' : 'opacity-80 group-hover:opacity-100'),
-            disabled,
-            onClick: () => void workWithHermes(task),
-            size: 'xs',
-            type: 'button',
-            variant: prominent ? 'default' : 'secondary',
-            children: jsxs('span', {
-              className: 'inline-flex items-center gap-1',
-              children: [
-                jsx(icons.MessageCircle, { className: 'size-3' }),
-                workingId === task.id
-                  ? 'Sending…'
-                  : task.sessionId && task.sessionState === 'active'
-                    ? task.status === 'open' ? 'Resume with Hermes' : 'Open linked session'
-                    : 'Work with Hermes'
-              ]
-            })
-          }),
-          ['waiting', 'blocked'].includes(task.status) && !(task.sessionId && task.sessionState === 'active') && jsx('span', {
-            className: 'text-[0.625rem] text-(--ui-text-quaternary)',
-            children: task.status === 'blocked' ? 'Clear the blocker to start Hermes.' : 'Reopen when the wait is over.'
-          })
-        ]
       })
     ]
   })
