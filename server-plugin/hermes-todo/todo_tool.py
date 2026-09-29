@@ -10,17 +10,30 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from hermes_todo_store import (
-    BoardError,
-    RevisionConflict,
-    create_task,
-    get_board,
-    get_history,
-    get_task,
-    reorder_task,
-    search_tasks,
-    update_task,
-)
+try:
+    from .hermes_todo_store import (
+        BoardError,
+        RevisionConflict,
+        create_task,
+        get_board,
+        get_history,
+        get_task,
+        reorder_task,
+        search_tasks,
+        update_task,
+    )
+except ImportError:  # Direct source-tree execution and tests.
+    from hermes_todo_store import (
+        BoardError,
+        RevisionConflict,
+        create_task,
+        get_board,
+        get_history,
+        get_task,
+        reorder_task,
+        search_tasks,
+        update_task,
+    )
 
 _CATEGORIES = ["today", "tomorrow", "this-week", "this-month", "soon"]
 _PLANS = ["now", "today", "later"]
@@ -90,6 +103,12 @@ def _compact_task(task: dict[str, Any]) -> dict[str, Any]:
     return {key: task.get(key) for key in keys if task.get(key) is not None}
 
 
+def _revision_kwargs(args: dict[str, Any]) -> dict[str, Any]:
+    if args.get("expected_revision") is None:
+        return {}
+    return {"expected_revision": int(args["expected_revision"])}
+
+
 def _apply(args: dict[str, Any]) -> dict[str, Any]:
     action = args.get("action")
     if action == "list":
@@ -121,7 +140,11 @@ def _apply(args: dict[str, Any]) -> dict[str, Any]:
     if action == "create":
         if not args.get("title"):
             raise BoardError("create requires title")
-        kwargs: dict[str, Any] = {"event_source": "tool", "return_board": False}
+        kwargs: dict[str, Any] = {
+            "event_source": "tool",
+            "return_board": False,
+            **_revision_kwargs(args),
+        }
         for source, target in fields:
             if source != "title" and args.get(source) is not None:
                 kwargs[target] = args[source]
@@ -143,9 +166,13 @@ def _apply(args: dict[str, Any]) -> dict[str, Any]:
                 changes[source] = args[source]
         if not changes:
             raise BoardError("update produced no changes")
-        if args.get("expected_revision") is not None:
-            changes["expectedRevision"] = int(args["expected_revision"])
-        result = update_task(args["task_id"], changes, event_source="tool", return_board=False)
+        result = update_task(
+            args["task_id"],
+            changes,
+            event_source="tool",
+            return_board=False,
+            **_revision_kwargs(args),
+        )
         result["task"] = _compact_task(result["task"])
         return result
     if action == "reorder":
@@ -158,6 +185,7 @@ def _apply(args: dict[str, Any]) -> dict[str, Any]:
             after_id=args.get("after_id"),
             event_source="tool",
             return_board=False,
+            **_revision_kwargs(args),
         )
         result["task"] = _compact_task(result["task"])
         return result
@@ -165,7 +193,13 @@ def _apply(args: dict[str, Any]) -> dict[str, Any]:
         changes = {"status": "open", "waitingOn": None, "reviewDate": None, "blocker": None, "inbox": False}
         if args.get("category"):
             changes["category"] = args["category"]
-        result = update_task(args["task_id"], {**changes, "plan": "now"}, event_source="tool", return_board=False)
+        result = update_task(
+            args["task_id"],
+            {**changes, "plan": "now"},
+            event_source="tool",
+            return_board=False,
+            **_revision_kwargs(args),
+        )
         result["task"] = _compact_task(result["task"])
         return result
     if action == "done":
@@ -174,7 +208,13 @@ def _apply(args: dict[str, Any]) -> dict[str, Any]:
             changes["closureNote"] = args["closure_note"]
         if args.get("evidence") is not None:
             changes["closureEvidence"] = args["evidence"]
-        result = update_task(args["task_id"], changes, event_source="tool", return_board=False)
+        result = update_task(
+            args["task_id"],
+            changes,
+            event_source="tool",
+            return_board=False,
+            **_revision_kwargs(args),
+        )
         result["task"] = _compact_task(result["task"])
         return result
     raise BoardError(f"Unknown action: {action}")
