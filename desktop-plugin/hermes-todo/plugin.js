@@ -1756,19 +1756,15 @@ function TodoPane({ ctx }) {
         className: 'border-b border-(--ui-stroke-secondary) px-3 py-3',
         children: [
           jsxs('div', {
-            className: 'flex items-start justify-between gap-3',
+            style: { display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', columnGap: 12 },
             children: [
+              jsx('h2', { className: 'text-sm font-semibold text-(--ui-text-primary)', children: 'Todo' }),
+              jsx('span', { className: 'text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)', children: dateLabel }),
               jsxs('div', {
+                className: 'flex items-baseline justify-end gap-1.5',
                 children: [
-                  jsx('h2', { className: 'text-sm font-semibold text-(--ui-text-primary)', children: 'Todo' }),
-                  jsx('p', { className: 'mt-0.5 text-[0.6875rem] text-(--ui-text-quaternary)', children: dateLabel })
-                ]
-              }),
-              jsxs('div', {
-                className: 'text-right',
-                children: [
-                  jsx('div', { className: 'text-xs font-medium tabular-nums text-(--ui-text-secondary)', children: openCount }),
-                  jsx('div', { className: 'text-[0.625rem] text-(--ui-text-quaternary)', children: 'open' })
+                  jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-quaternary)', children: 'open' }),
+                  jsx('span', { className: 'text-lg font-semibold tabular-nums leading-none text-(--ui-text-primary)', children: openCount })
                 ]
               })
             ]
@@ -1780,6 +1776,7 @@ function TodoPane({ ctx }) {
               jsx(Input, {
                 'aria-label': 'Capture a task to Inbox',
                 className: 'min-w-0 flex-1',
+                style: { borderColor: 'color-mix(in srgb, var(--ui-text-primary) 22%, transparent)' },
                 disabled: remote.connection === 'offline',
                 maxLength: 500,
                 onChange: event => setDraft(event.target.value),
