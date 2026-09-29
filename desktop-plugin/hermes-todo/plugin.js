@@ -2,6 +2,7 @@ import {
   Button,
   EmptyState,
   Input,
+  SegmentedControl,
   Tip,
   cn,
   haptic,
@@ -30,6 +31,13 @@ const CATEGORY_LABELS = {
   soon: 'Soon'
 }
 const POLL_MS = 3000
+const DETAIL_TABS = [
+  { id: 'work', label: 'Work' },
+  { id: 'plan', label: 'Plan' },
+  { id: 'wait', label: 'Wait' },
+  { id: 'more', label: 'More' }
+]
+const AUTOSAVE_MS = 500
 
 const emptyBoard = () => ({ version: 6, revision: 0, tasks: [] })
 
@@ -975,6 +983,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
     initialDraftRef.current = makeTaskDetailsDraft(task, localTimeZone)
   }
   const initialDraft = initialDraftRef.current
+  const [detailTab, setDetailTab] = useState('work')
   const [titleDraft, setTitleDraft] = useState(initialDraft.title)
   const [projectDraft, setProjectDraft] = useState(initialDraft.project)
   const [recurrenceDraft, setRecurrenceDraft] = useState(initialDraft.recurrence)
@@ -1003,42 +1012,284 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
     retry: 1
   })
 
+  const currentDraft = {
+    approvalState: approvalStateDraft,
+    artefacts: lines(artefactsDraft),
+    blocker: blockerDraft,
+    brief: briefDraft,
+    closureCondition: closureConditionDraft,
+    closureEvidence: lines(closureEvidenceDraft),
+    closureNote: closureNoteDraft,
+    dueAt: timedDraft,
+    dueDate: dueDraft,
+    dueMode,
+    dueTimezone: initialDraft.dueTimezone,
+    executionMode: executionModeDraft,
+    nextAction: nextActionDraft,
+    owner: ownerDraft,
+    priority: priorityDraft,
+    project: projectDraft,
+    recurrence: recurrenceDraft,
+    recurrenceRule: recurrenceRuleDraft,
+    recurrenceTimezone: recurrenceTimezoneDraft,
+    reviewDate: reviewDateDraft,
+    title: titleDraft,
+    waitingOn: waitingOnDraft
+  }
+  const currentDraftRef = useRef(currentDraft)
+  currentDraftRef.current = currentDraft
+
+  const flushSave = useCallback(async () => {
+    const snapshot = currentDraftRef.current
+    const title = snapshot.title.trim()
+    if (!title) return false
+    const changes = changedTaskDetails(initialDraftRef.current, snapshot)
+    if (Object.keys(changes).length === 0) return true
+    const saved = await update(task.id, changes)
+    if (saved) initialDraftRef.current = { ...snapshot, title }
+    return saved
+  }, [task.id, update])
+
+  useEffect(() => {
+    if (disabled) return undefined
+    const title = currentDraft.title.trim()
+    if (!title) return undefined
+    const changes = changedTaskDetails(initialDraftRef.current, currentDraft)
+    if (Object.keys(changes).length === 0) return undefined
+    const timer = setTimeout(() => { void flushSave() }, AUTOSAVE_MS)
+    return () => clearTimeout(timer)
+  })
+
+  useEffect(() => () => { void flushSave() }, [flushSave])
+
   const saveDetails = async event => {
     event.preventDefault()
-    const title = titleDraft.trim()
-    if (!title) return
-    const currentDraft = {
-      approvalState: approvalStateDraft,
-      artefacts: lines(artefactsDraft),
-      blocker: blockerDraft,
-      brief: briefDraft,
-      closureCondition: closureConditionDraft,
-      closureEvidence: lines(closureEvidenceDraft),
-      closureNote: closureNoteDraft,
-      dueAt: timedDraft,
-      dueDate: dueDraft,
-      dueMode,
-      dueTimezone: initialDraft.dueTimezone,
-      executionMode: executionModeDraft,
-      nextAction: nextActionDraft,
-      owner: ownerDraft,
-      priority: priorityDraft,
-      project: projectDraft,
-      recurrence: recurrenceDraft,
-      recurrenceRule: recurrenceRuleDraft,
-      recurrenceTimezone: recurrenceTimezoneDraft,
-      reviewDate: reviewDateDraft,
-      title,
-      waitingOn: waitingOnDraft
-    }
-    const changes = changedTaskDetails(initialDraft, currentDraft)
-    if (Object.keys(changes).length === 0) {
-      close()
-      return
-    }
-    const saved = await update(task.id, changes)
-    if (saved) close()
+    await flushSave()
   }
+
+  const workFields = [
+    jsx(FieldLabel, { children: 'Task title' }, 'title-label'),
+    jsx(Input, {
+      'aria-label': 'Task title',
+      className: 'h-7 text-xs',
+      disabled,
+      maxLength: 500,
+      onChange: event => setTitleDraft(event.target.value),
+      value: titleDraft
+    }, 'title'),
+    jsx(TextAreaField, { disabled, label: 'Brief and decisions', maxLength: 8000, onChange: event => setBriefDraft(event.target.value), placeholder: 'Durable context for re-entry', value: briefDraft }, 'brief'),
+    jsx(TextAreaField, { disabled, label: 'Next action', maxLength: 2000, onChange: event => setNextActionDraft(event.target.value), placeholder: 'The smallest live move', value: nextActionDraft }, 'next'),
+    jsx(TextAreaField, { disabled, label: 'Closure condition', maxLength: 4000, onChange: event => setClosureConditionDraft(event.target.value), placeholder: 'What proves this is complete?', value: closureConditionDraft }, 'closure'),
+    jsx(TextAreaField, { disabled, label: 'Artefacts', maxLength: 20000, onChange: event => setArtefactsDraft(event.target.value), placeholder: 'One safe link or path per line', value: artefactsDraft }, 'artefacts')
+  ]
+
+  const planFields = [
+    jsx(FieldLabel, { children: 'Plan' }, 'plan-label'),
+    jsxs('div', {
+      className: 'flex flex-wrap gap-1',
+      children: [
+        jsx(ChoiceButton, { active: task.status === 'open' && task.plan === 'now', disabled, onClick: () => void update(task.id, { plan: 'now', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }), children: 'Now' }),
+        jsx(ChoiceButton, { active: task.status === 'open' && task.plan === 'today', disabled, onClick: () => void update(task.id, { plan: 'today', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }), children: 'Today' }),
+        jsx(ChoiceButton, { active: task.status === 'open' && task.plan === 'later', disabled, onClick: () => void update(task.id, { plan: 'later', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }), children: 'Later' })
+      ]
+    }, 'plan'),
+    jsx(FieldLabel, { children: 'Category' }, 'cat-label'),
+    jsxs('div', {
+      className: 'flex flex-wrap gap-1',
+      children: CATEGORIES.map(categoryId => jsx(ChoiceButton, {
+        active: task.category === categoryId,
+        disabled,
+        onClick: () => void update(task.id, { category: categoryId }),
+        children: CATEGORY_LABELS[categoryId]
+      }, categoryId))
+    }, 'cat'),
+    jsx(FieldLabel, { children: 'Status' }, 'status-label'),
+    jsxs('div', {
+      className: 'flex flex-wrap gap-1',
+      children: [
+        jsx(ChoiceButton, { active: task.status === 'open', disabled, onClick: () => void update(task.id, { status: 'open', waitingOn: null, reviewDate: null, blocker: null }), children: 'Open' }),
+        jsx(ChoiceButton, { active: task.status === 'waiting', disabled, onClick: () => void update(task.id, { status: 'waiting', blocker: null }), children: 'Waiting' }),
+        jsx(ChoiceButton, { active: task.status === 'blocked', disabled, onClick: () => void update(task.id, { status: 'blocked', waitingOn: null, reviewDate: null }), children: 'Blocked' })
+      ]
+    }, 'status'),
+    jsx(FieldLabel, { children: 'Deadline' }, 'due-label'),
+    jsxs('div', {
+      className: 'mb-1 flex gap-1',
+      children: [
+        jsx(ChoiceButton, {
+          active: dueMode === 'date',
+          disabled,
+          onClick: () => {
+            if (dueMode === 'date') return
+            setDueMode('date')
+            const carried = (timedDraft || '').slice(0, 10)
+            if (/^\d{4}-\d{2}-\d{2}$/.test(carried)) setDueDraft(carried)
+          },
+          children: 'All day'
+        }),
+        jsx(ChoiceButton, {
+          active: dueMode === 'timed',
+          disabled,
+          onClick: () => {
+            if (dueMode === 'timed') return
+            setDueMode('timed')
+            if (!timedDraft && /^\d{4}-\d{2}-\d{2}$/.test(dueDraft || '')) setTimedDraft(`${dueDraft}T12:00`)
+          },
+          children: 'Timed'
+        })
+      ]
+    }, 'due-mode'),
+    dueMode === 'timed'
+      ? jsx(Input, {
+          'aria-label': 'Timed deadline',
+          className: 'h-7 text-xs',
+          disabled,
+          onChange: event => setTimedDraft(event.target.value),
+          type: 'datetime-local',
+          value: timedDraft
+        }, 'timed')
+      : jsx(Input, {
+          'aria-label': 'Due date',
+          className: 'h-7 text-xs',
+          disabled,
+          onChange: event => setDueDraft(event.target.value),
+          type: 'date',
+          value: dueDraft
+        }, 'date'),
+    jsx(FieldLabel, { children: 'Priority' }, 'pri-label'),
+    jsx('div', {
+      className: 'flex flex-wrap gap-1',
+      children: [null, 1, 2, 3, 4].map(value => jsx(ChoiceButton, {
+        active: priorityDraft === value,
+        disabled,
+        onClick: () => setPriorityDraft(value),
+        children: value === null ? 'None' : `P${value}`
+      }, String(value)))
+    }, 'pri'),
+    jsx(FieldLabel, { children: 'Project' }, 'proj-label'),
+    jsx(Input, {
+      'aria-label': 'Project',
+      className: 'h-7 text-xs',
+      disabled,
+      maxLength: 500,
+      onChange: event => setProjectDraft(event.target.value),
+      placeholder: 'Optional',
+      value: projectDraft
+    }, 'proj')
+  ]
+
+  const waitFields = [
+    jsx(FieldLabel, { children: 'Waiting and blocking' }, 'wait-label'),
+    jsxs('div', {
+      className: 'grid grid-cols-2 gap-1.5',
+      children: [
+        jsx(Input, { 'aria-label': 'Waiting on', className: 'h-7 text-xs', disabled, maxLength: 1000, onChange: event => setWaitingOnDraft(event.target.value), placeholder: 'Waiting on', value: waitingOnDraft }),
+        jsx(Input, { 'aria-label': 'Review date', className: 'h-7 text-xs', disabled, onChange: event => setReviewDateDraft(event.target.value), type: 'date', value: reviewDateDraft })
+      ]
+    }, 'wait-row'),
+    jsx(TextAreaField, { disabled, label: 'Blocker', maxLength: 2000, onChange: event => setBlockerDraft(event.target.value), placeholder: 'What prevents progress?', value: blockerDraft }, 'blocker'),
+    jsx(FieldLabel, { children: 'Owner and execution' }, 'owner-label'),
+    jsx(Input, { 'aria-label': 'Owner', className: 'h-7 text-xs', disabled, maxLength: 200, onChange: event => setOwnerDraft(event.target.value), placeholder: 'Owner or assignee', value: ownerDraft }, 'owner'),
+    jsx('div', {
+      className: 'mt-1 flex flex-wrap gap-1',
+      children: ['manual', 'supervised', 'autonomous'].map(value => jsx(ChoiceButton, { active: executionModeDraft === value, disabled, onClick: () => setExecutionModeDraft(value), children: value }, value))
+    }, 'exec'),
+    jsx('div', {
+      className: 'mt-1 flex flex-wrap gap-1',
+      children: ['not-required', 'pending', 'approved', 'rejected'].map(value => jsx(ChoiceButton, { active: approvalStateDraft === value, disabled, onClick: () => setApprovalStateDraft(value), children: value }, value))
+    }, 'approval')
+  ]
+
+  const moreFields = [
+    jsx(FieldLabel, { children: 'Recurrence note' }, 'rec-label'),
+    jsx(Input, {
+      'aria-label': 'Recurrence note',
+      className: 'h-7 text-xs',
+      disabled,
+      maxLength: 500,
+      onChange: event => setRecurrenceDraft(event.target.value),
+      placeholder: 'Optional',
+      value: recurrenceDraft
+    }, 'rec'),
+    jsx(FieldLabel, { children: 'Executable recurrence' }, 'rule-label'),
+    jsxs('div', {
+      className: 'grid grid-cols-2 gap-1.5',
+      children: [
+        jsx(Input, { 'aria-label': 'Recurrence rule', className: 'h-7 text-xs', disabled, maxLength: 50, onChange: event => setRecurrenceRuleDraft(event.target.value), placeholder: 'daily, weekdays, weekly…', value: recurrenceRuleDraft }),
+        jsx(Input, { 'aria-label': 'Recurrence timezone', className: 'h-7 text-xs', disabled, maxLength: 100, onChange: event => setRecurrenceTimezoneDraft(event.target.value), placeholder: 'Europe/Amsterdam', value: recurrenceTimezoneDraft })
+      ]
+    }, 'rule'),
+    task.seriesId && jsx('div', { className: 'mt-1 break-all text-[0.625rem] text-(--ui-text-quaternary)', children: `Series ${task.seriesId} · occurrence ${task.occurrenceNumber}` }, 'series'),
+    jsx(TextAreaField, { disabled, label: 'Closure note', maxLength: 4000, onChange: event => setClosureNoteDraft(event.target.value), placeholder: 'What was delivered?', value: closureNoteDraft }, 'cnote'),
+    jsx(TextAreaField, { disabled, label: 'Closure evidence', maxLength: 20000, onChange: event => setClosureEvidenceDraft(event.target.value), placeholder: 'One verification path or link per line', value: closureEvidenceDraft }, 'cevid'),
+    task.sessionId && jsxs('div', {
+      className: 'mt-2 rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
+      children: [
+        jsx('div', { className: 'break-all', children: `Hermes session ${task.sessionState || 'linked'} · ${task.sessionId}` }),
+        task.sessionState === 'active' && jsxs('div', {
+          className: 'mt-1.5 flex items-center justify-between gap-2',
+          children: [
+            jsx('span', { className: 'leading-4 text-(--ui-text-quaternary)', children: 'Close a stale active link before starting a replacement.' }),
+            jsx(Button, {
+              disabled,
+              onClick: () => void completeSession(task.id),
+              size: 'micro',
+              type: 'button',
+              variant: 'text',
+              children: 'Close linked session'
+            })
+          ]
+        })
+      ]
+    }, 'session'),
+    jsxs('details', {
+      className: 'mt-3',
+      children: [
+        jsxs('summary', {
+          className: 'cursor-pointer text-[0.6875rem] font-medium text-(--ui-text-tertiary)',
+          children: ['History', historyQuery.data?.events?.length ? ` · ${historyQuery.data.events.length}` : '']
+        }),
+        historyQuery.isLoading
+          ? jsx('div', { className: 'py-2 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'Loading history…' })
+          : historyQuery.isError
+            ? jsx('div', { className: 'py-2 text-[0.6875rem] text-(--ui-text-tertiary)', children: `History unavailable: ${errorText(historyQuery.error)}` })
+            : historyQuery.data?.events?.length
+              ? jsx('ol', {
+                  className: 'mt-1 border-l border-(--ui-stroke-secondary) pl-2',
+                  children: historyQuery.data.events.map(event => jsxs('li', {
+                    className: 'py-1 text-[0.625rem] leading-4 text-(--ui-text-quaternary)',
+                    children: [
+                      jsx('div', { className: 'font-medium text-(--ui-text-tertiary)', children: event.type.replaceAll('.', ' ') }),
+                      jsx('div', { children: [event.source, event.actor, new Date(event.createdAt).toLocaleString()].filter(Boolean).join(' · ') })
+                    ]
+                  }, event.id))
+                })
+              : jsx('div', { className: 'py-2 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'No history recorded yet.' })
+      ]
+    }, 'history'),
+    jsxs('div', {
+      className: 'mt-2 flex items-center gap-1',
+      children: [
+        jsx(Button, {
+          disabled,
+          onClick: async () => {
+            if (!confirmDelete) {
+              setConfirmDelete(true)
+              return
+            }
+            if (await remove(task.id)) close()
+          },
+          size: 'xs',
+          type: 'button',
+          variant: 'text',
+          children: confirmDelete ? 'Confirm delete' : 'Delete'
+        }),
+        jsx(Button, { disabled, onClick: close, size: 'xs', type: 'button', variant: 'text', children: 'Cancel' })
+      ]
+    }, 'actions')
+  ]
+
+  const tabFields = detailTab === 'plan' ? planFields : detailTab === 'wait' ? waitFields : detailTab === 'more' ? moreFields : workFields
 
   return jsxs('form', {
     className: 'mt-2 rounded-md border border-(--ui-stroke-secondary) p-2',
@@ -1047,217 +1298,27 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
       if (event.key === 'Escape') close()
     },
     children: [
-      jsx(FieldLabel, { children: 'Task title' }),
-      jsx(Input, {
-        'aria-label': 'Task title',
-        className: 'h-7 text-xs',
-        disabled,
-        maxLength: 500,
-        onChange: event => setTitleDraft(event.target.value),
-        value: titleDraft
-      }),
-      jsx(FieldLabel, { children: 'Plan' }),
       jsxs('div', {
-        className: 'flex flex-wrap gap-1',
+        className: 'flex items-center justify-between gap-1',
         children: [
-          jsx(ChoiceButton, { active: task.status === 'open' && task.plan === 'now', disabled, onClick: () => void update(task.id, { plan: 'now', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }), children: 'Now' }),
-          jsx(ChoiceButton, { active: task.status === 'open' && task.plan === 'today', disabled, onClick: () => void update(task.id, { plan: 'today', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }), children: 'Today' }),
-          jsx(ChoiceButton, { active: task.status === 'open' && task.plan === 'later', disabled, onClick: () => void update(task.id, { plan: 'later', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }), children: 'Later' })
-        ]
-      }),
-      jsx(FieldLabel, { children: 'Category' }),
-      jsxs('div', {
-        className: 'flex flex-wrap gap-1',
-        children: CATEGORIES.map(categoryId => jsx(ChoiceButton, {
-          active: task.category === categoryId,
-          disabled,
-          onClick: () => void update(task.id, { category: categoryId }),
-          children: CATEGORY_LABELS[categoryId]
-        }, categoryId))
-      }),
-      jsx(FieldLabel, { children: 'Status' }),
-      jsxs('div', {
-        className: 'flex flex-wrap gap-1',
-        children: [
-          jsx(ChoiceButton, { active: task.status === 'open', disabled, onClick: () => void update(task.id, { status: 'open', waitingOn: null, reviewDate: null, blocker: null }), children: 'Open' }),
-          jsx(ChoiceButton, { active: task.status === 'waiting', disabled, onClick: () => void update(task.id, { status: 'waiting', blocker: null }), children: 'Waiting' }),
-          jsx(ChoiceButton, { active: task.status === 'blocked', disabled, onClick: () => void update(task.id, { status: 'blocked', waitingOn: null, reviewDate: null }), children: 'Blocked' })
-        ]
-      }),
-      jsx(FieldLabel, { children: 'Deadline' }),
-      jsxs('div', {
-        className: 'mb-1 flex gap-1',
-        children: [
-          jsx(ChoiceButton, {
-            active: dueMode === 'date',
+          jsx(SegmentedControl, {
             disabled,
-            onClick: () => {
-              if (dueMode === 'date') return
-              setDueMode('date')
-              const carried = (timedDraft || '').slice(0, 10)
-              if (/^\d{4}-\d{2}-\d{2}$/.test(carried)) setDueDraft(carried)
-            },
-            children: 'All day'
+            onChange: setDetailTab,
+            options: DETAIL_TABS,
+            value: detailTab
           }),
-          jsx(ChoiceButton, {
-            active: dueMode === 'timed',
-            disabled,
-            onClick: () => {
-              if (dueMode === 'timed') return
-              setDueMode('timed')
-              if (!timedDraft && /^\d{4}-\d{2}-\d{2}$/.test(dueDraft || '')) setTimedDraft(`${dueDraft}T12:00`)
-            },
-            children: 'Timed'
-          })
-        ]
-      }),
-      dueMode === 'timed'
-        ? jsx(Input, {
-            'aria-label': 'Timed deadline',
-            className: 'h-7 text-xs',
-            disabled,
-            onChange: event => setTimedDraft(event.target.value),
-            type: 'datetime-local',
-            value: timedDraft
-          })
-        : jsx(Input, {
-            'aria-label': 'Due date',
-            className: 'h-7 text-xs',
-            disabled,
-            onChange: event => setDueDraft(event.target.value),
-            type: 'date',
-            value: dueDraft
-          }),
-      jsx(TextAreaField, { disabled, label: 'Brief and decisions', maxLength: 8000, onChange: event => setBriefDraft(event.target.value), placeholder: 'Durable context for re-entry', value: briefDraft }),
-      jsx(TextAreaField, { disabled, label: 'Next action', maxLength: 2000, onChange: event => setNextActionDraft(event.target.value), placeholder: 'The smallest live move', value: nextActionDraft }),
-      jsx(TextAreaField, { disabled, label: 'Closure condition', maxLength: 4000, onChange: event => setClosureConditionDraft(event.target.value), placeholder: 'What proves this is complete?', value: closureConditionDraft }),
-      jsx(FieldLabel, { children: 'Waiting and blocking' }),
-      jsxs('div', {
-        className: 'grid grid-cols-2 gap-1.5',
-        children: [
-          jsx(Input, { 'aria-label': 'Waiting on', className: 'h-7 text-xs', disabled, maxLength: 1000, onChange: event => setWaitingOnDraft(event.target.value), placeholder: 'Waiting on', value: waitingOnDraft }),
-          jsx(Input, { 'aria-label': 'Review date', className: 'h-7 text-xs', disabled, onChange: event => setReviewDateDraft(event.target.value), type: 'date', value: reviewDateDraft })
-        ]
-      }),
-      jsx(TextAreaField, { disabled, label: 'Blocker', maxLength: 2000, onChange: event => setBlockerDraft(event.target.value), placeholder: 'What prevents progress?', value: blockerDraft }),
-      jsx(FieldLabel, { children: 'Project' }),
-      jsx(Input, {
-        'aria-label': 'Project',
-        className: 'h-7 text-xs',
-        disabled,
-        maxLength: 500,
-        onChange: event => setProjectDraft(event.target.value),
-        placeholder: 'Optional',
-        value: projectDraft
-      }),
-      jsx(FieldLabel, { children: 'Priority' }),
-      jsx('div', {
-        className: 'flex flex-wrap gap-1',
-        children: [null, 1, 2, 3, 4].map(value => jsx(ChoiceButton, {
-          active: priorityDraft === value,
-          disabled,
-          onClick: () => setPriorityDraft(value),
-          children: value === null ? 'None' : `P${value}`
-        }, String(value)))
-      }),
-      jsx(FieldLabel, { children: 'Owner and execution' }),
-      jsx(Input, { 'aria-label': 'Owner', className: 'h-7 text-xs', disabled, maxLength: 200, onChange: event => setOwnerDraft(event.target.value), placeholder: 'Owner or assignee', value: ownerDraft }),
-      jsx('div', {
-        className: 'mt-1 flex flex-wrap gap-1',
-        children: ['manual', 'supervised', 'autonomous'].map(value => jsx(ChoiceButton, { active: executionModeDraft === value, disabled, onClick: () => setExecutionModeDraft(value), children: value }, value))
-      }),
-      jsx('div', {
-        className: 'mt-1 flex flex-wrap gap-1',
-        children: ['not-required', 'pending', 'approved', 'rejected'].map(value => jsx(ChoiceButton, { active: approvalStateDraft === value, disabled, onClick: () => setApprovalStateDraft(value), children: value }, value))
-      }),
-      jsx(TextAreaField, { disabled, label: 'Artefacts', maxLength: 20000, onChange: event => setArtefactsDraft(event.target.value), placeholder: 'One safe link or path per line', value: artefactsDraft }),
-      jsx(FieldLabel, { children: 'Recurrence note' }),
-      jsx(Input, {
-        'aria-label': 'Recurrence note',
-        className: 'h-7 text-xs',
-        disabled,
-        maxLength: 500,
-        onChange: event => setRecurrenceDraft(event.target.value),
-        placeholder: 'Optional',
-        value: recurrenceDraft
-      }),
-      jsx(FieldLabel, { children: 'Executable recurrence' }),
-      jsxs('div', {
-        className: 'grid grid-cols-2 gap-1.5',
-        children: [
-          jsx(Input, { 'aria-label': 'Recurrence rule', className: 'h-7 text-xs', disabled, maxLength: 50, onChange: event => setRecurrenceRuleDraft(event.target.value), placeholder: 'daily, weekdays, weekly…', value: recurrenceRuleDraft }),
-          jsx(Input, { 'aria-label': 'Recurrence timezone', className: 'h-7 text-xs', disabled, maxLength: 100, onChange: event => setRecurrenceTimezoneDraft(event.target.value), placeholder: 'Europe/Amsterdam', value: recurrenceTimezoneDraft })
-        ]
-      }),
-      task.seriesId && jsx('div', { className: 'mt-1 break-all text-[0.625rem] text-(--ui-text-quaternary)', children: `Series ${task.seriesId} · occurrence ${task.occurrenceNumber}` }),
-      jsx(TextAreaField, { disabled, label: 'Closure note', maxLength: 4000, onChange: event => setClosureNoteDraft(event.target.value), placeholder: 'What was delivered?', value: closureNoteDraft }),
-      jsx(TextAreaField, { disabled, label: 'Closure evidence', maxLength: 20000, onChange: event => setClosureEvidenceDraft(event.target.value), placeholder: 'One verification path or link per line', value: closureEvidenceDraft }),
-      task.sessionId && jsxs('div', {
-        className: 'mt-2 rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
-        children: [
-          jsx('div', { className: 'break-all', children: `Hermes session ${task.sessionState || 'linked'} · ${task.sessionId}` }),
-          task.sessionState === 'active' && jsxs('div', {
-            className: 'mt-1.5 flex items-center justify-between gap-2',
-            children: [
-              jsx('span', { className: 'leading-4 text-(--ui-text-quaternary)', children: 'Close a stale active link before starting a replacement.' }),
-              jsx(Button, {
-                disabled,
-                onClick: () => void completeSession(task.id),
-                size: 'micro',
-                type: 'button',
-                variant: 'text',
-                children: 'Close linked session'
-              })
-            ]
-          })
-        ]
-      }),
-      jsxs('details', {
-        className: 'mt-3',
-        children: [
-          jsxs('summary', {
-            className: 'cursor-pointer text-[0.6875rem] font-medium text-(--ui-text-tertiary)',
-            children: ['History', historyQuery.data?.events?.length ? ` · ${historyQuery.data.events.length}` : '']
-          }),
-          historyQuery.isLoading
-            ? jsx('div', { className: 'py-2 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'Loading history…' })
-            : historyQuery.isError
-              ? jsx('div', { className: 'py-2 text-[0.6875rem] text-(--ui-text-tertiary)', children: `History unavailable: ${errorText(historyQuery.error)}` })
-              : historyQuery.data?.events?.length
-                ? jsx('ol', {
-                    className: 'mt-1 border-l border-(--ui-stroke-secondary) pl-2',
-                    children: historyQuery.data.events.map(event => jsxs('li', {
-                      className: 'py-1 text-[0.625rem] leading-4 text-(--ui-text-quaternary)',
-                      children: [
-                        jsx('div', { className: 'font-medium text-(--ui-text-tertiary)', children: event.type.replaceAll('.', ' ') }),
-                        jsx('div', { children: [event.source, event.actor, new Date(event.createdAt).toLocaleString()].filter(Boolean).join(' · ') })
-                      ]
-                    }, event.id))
-                  })
-                : jsx('div', { className: 'py-2 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'No history recorded yet.' })
-        ]
-      }),
-      jsx('div', {
-        className: 'mt-2 flex items-center gap-1',
-        children: [
-          jsx(Button, { disabled: disabled || !titleDraft.trim(), size: 'xs', type: 'submit', variant: 'secondary', children: 'Save details' }),
           jsx(Button, {
-            disabled,
-            onClick: async () => {
-              if (!confirmDelete) {
-                setConfirmDelete(true)
-                return
-              }
-              if (await remove(task.id)) close()
-            },
-            size: 'xs',
+            'aria-label': 'Save',
+            disabled: disabled || !titleDraft.trim(),
+            onClick: () => void flushSave(),
+            size: 'icon-xs',
             type: 'button',
-            variant: 'text',
-            children: confirmDelete ? 'Confirm delete' : 'Delete'
-          }),
-          jsx(Button, { disabled, onClick: close, size: 'xs', type: 'button', variant: 'text', children: 'Cancel' })
+            variant: 'ghost',
+            children: jsx(icons.Save, { className: 'size-3.5' })
+          })
         ]
-      })
+      }),
+      ...tabFields
     ]
   })
 }
