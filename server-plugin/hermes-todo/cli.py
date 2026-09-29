@@ -22,7 +22,7 @@ try:
         get_task,
         import_tasks,
         link_task_session,
-        search_tasks,
+            search_tasks,
         update_task,
     )
 except ImportError:  # Direct source-tree execution and tests.
@@ -39,7 +39,7 @@ except ImportError:  # Direct source-tree execution and tests.
         get_task,
         import_tasks,
         link_task_session,
-        search_tasks,
+            search_tasks,
         update_task,
     )
 
@@ -64,6 +64,11 @@ def _task_field_options(parser: argparse.ArgumentParser, *, create: bool) -> Non
     parser.add_argument("--estimate", type=int, default=25 if create else None)
     parser.add_argument("--plan", choices=["now", "today", "later"], default="today" if create else None)
     parser.add_argument("--status", choices=["open", "waiting", "blocked", "done"], default="open" if create else None)
+    parser.add_argument(
+        "--category",
+        choices=["today", "tomorrow", "this-week", "this-month", "soon"],
+        default="today" if create else None,
+    )
     parser.add_argument("--due")
     parser.add_argument("--due-timezone")
     parser.add_argument("--project")
@@ -89,6 +94,7 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     list_parser = actions.add_parser("list", aliases=["ls"], help="Show the shared board")
     list_parser.add_argument("--plan", choices=["now", "today", "later"])
     list_parser.add_argument("--status", choices=["open", "waiting", "blocked", "done"])
+    list_parser.add_argument("--category", choices=["today", "tomorrow", "this-week", "this-month", "soon"])
     list_parser.add_argument("--project")
     list_parser.add_argument("--owner")
     list_parser.add_argument("--inbox", action="store_true")
@@ -102,6 +108,7 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     search_parser.add_argument("query")
     search_parser.add_argument("--plan", choices=["now", "today", "later"])
     search_parser.add_argument("--status", choices=["open", "waiting", "blocked", "done"])
+    search_parser.add_argument("--category", choices=["today", "tomorrow", "this-week", "this-month", "soon"])
     search_parser.add_argument("--project")
     search_parser.add_argument("--owner")
     search_parser.add_argument("--inbox", action="store_true")
@@ -135,6 +142,10 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
         ("start", "Start a task as the single Now item"),
         ("today", "Plan an open task for Today"),
         ("later", "Move an open task to Later"),
+        ("tomorrow", "Move an open task to the Tomorrow category"),
+        ("this-week", "Move an open task to the This Week category"),
+        ("this-month", "Move an open task to the This Month category"),
+        ("soon", "Move an open task to the Soon category"),
         ("reopen", "Reopen and clear waiting/blocking context"),
     ):
         action = actions.add_parser(name, help=help_text)
@@ -190,6 +201,7 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     follow_parser.add_argument("title")
     follow_parser.add_argument("--plan", choices=["now", "today", "later"], default="today")
     follow_parser.add_argument("--status", choices=["open", "waiting", "blocked"], default="open")
+    follow_parser.add_argument("--category", choices=["today", "tomorrow", "this-week", "this-month", "soon"], default="today")
     follow_parser.add_argument("--waiting-on")
     follow_parser.add_argument("--review-date")
     follow_parser.add_argument("--blocker")
@@ -233,6 +245,7 @@ def _task_changes(args: argparse.Namespace) -> dict[str, Any]:
         "estimate": getattr(args, "estimate", None),
         "plan": getattr(args, "plan", None),
         "status": getattr(args, "status", None),
+        "category": getattr(args, "category", None),
         "dueTimezone": getattr(args, "due_timezone", None),
         "project": getattr(args, "project", None),
         "priority": getattr(args, "priority", None),
@@ -274,6 +287,7 @@ def todo_command(args: argparse.Namespace) -> int:
                 None,
                 plan=args.plan,
                 status=args.status,
+                category=getattr(args, "category", None),
                 project=args.project,
                 owner=args.owner,
                 inbox=True if args.inbox else None,
@@ -288,6 +302,7 @@ def todo_command(args: argparse.Namespace) -> int:
                 args.query,
                 plan=args.plan,
                 status=args.status,
+                category=getattr(args, "category", None),
                 project=args.project,
                 owner=args.owner,
                 inbox=True if args.inbox else None,
@@ -322,8 +337,19 @@ def todo_command(args: argparse.Namespace) -> int:
                 owner=args.owner,
                 **_mutation_kwargs(args),
             )
-        elif action in {"focus", "start", "today", "later", "reopen"}:
+        elif action in {
+            "focus", "start", "today", "later", "tomorrow",
+            "this-week", "this-month", "soon", "reopen",
+        }:
             plan = {"focus": "now", "start": "now", "today": "today", "later": "later"}.get(action)
+            category = {
+                "today": "today",
+                "later": "soon",
+                "tomorrow": "tomorrow",
+                "this-week": "this-week",
+                "this-month": "this-month",
+                "soon": "soon",
+            }.get(action)
             changes: dict[str, Any] = {
                 "status": "open",
                 "waitingOn": None,
@@ -333,6 +359,8 @@ def todo_command(args: argparse.Namespace) -> int:
             }
             if plan:
                 changes["plan"] = plan
+            if category:
+                changes["category"] = category
             output = update_task(args.task_id, changes, **_mutation_kwargs(args))
         elif action == "wait":
             changes = {"status": "waiting", "waitingOn": args.waiting_on, "reviewDate": args.review_date}
@@ -390,6 +418,7 @@ def todo_command(args: argparse.Namespace) -> int:
                     "title": args.title,
                     "plan": args.plan,
                     "status": args.status,
+                    "category": args.category,
                     "waitingOn": args.waiting_on,
                     "reviewDate": args.review_date,
                     "blocker": args.blocker,

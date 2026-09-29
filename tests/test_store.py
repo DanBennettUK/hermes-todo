@@ -97,7 +97,7 @@ class HermesTodoStoreTests(unittest.TestCase):
     def test_migrates_v2_without_losing_tasks_or_revision(self) -> None:
         self._create_v2_database()
         board = get_board()
-        self.assertEqual(board["version"], 4)
+        self.assertEqual(board["version"], 5)
         self.assertEqual(board["revision"], 7)
         self.assertEqual(len(board["tasks"]), 3)
         by_id = {task["id"]: task for task in board["tasks"]}
@@ -106,9 +106,10 @@ class HermesTodoStoreTests(unittest.TestCase):
         self.assertEqual(by_id["d"]["status"], "done")
         self.assertIsNone(by_id["n"]["dueDate"])
         self.assertIsNone(by_id["n"]["dueAt"])
+        self.assertEqual(by_id["n"]["category"], "today")
         conn = sqlite3.connect(resolve_db_path())
         try:
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 5)
         finally:
             conn.close()
 
