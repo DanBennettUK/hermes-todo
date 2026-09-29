@@ -1046,7 +1046,7 @@ _ALIASES = {
 def _normalise_changes(changes: dict[str, Any]) -> dict[str, Any]:
     normalised = {_ALIASES.get(key, key): value for key, value in changes.items()}
     allowed = {
-        "title", "plan", "status", "category", "estimate", "due_date", "due_at",
+        "title", "plan", "status", "category", "position", "estimate", "due_date", "due_at",
         "due_timezone", "due_language", "source", "external_id", "project",
         "priority", "recurrence", "source_updated_at", "source_payload", "lane",
         "brief", "next_action", "closure_condition", "waiting_on", "review_date",
@@ -1330,7 +1330,11 @@ def reorder_task(
             conn, target_category, task_id, before, after
         )
         new_position = (lower + upper) / 2.0
-        if not POSITION_MIN < new_position < POSITION_MAX:
+        if (
+            not POSITION_MIN < new_position < POSITION_MAX
+            or new_position == lower
+            or new_position == upper
+        ):
             _rebalance_category(conn, target_category)
             if before is not None:
                 before = conn.execute(
@@ -1344,6 +1348,8 @@ def reorder_task(
                 conn, target_category, task_id, before, after
             )
             new_position = (lower + upper) / 2.0
+            if new_position == lower or new_position == upper:
+                raise BoardError("Could not find a unique position between the drop neighbours")
         now = _utc_now()
         updates: dict[str, Any] = {"position": new_position, "updated_at": now}
         if str(row["category"]) != target_category:
@@ -2081,7 +2087,7 @@ def complete_with_follow_up(
 
 
 _IMPORT_KEYS = {
-    "id", "title", "lane", "plan", "status", "estimate", "dueDate", "dueAt",
+    "id", "title", "lane", "plan", "status", "category", "position", "estimate", "dueDate", "dueAt",
     "dueTimezone", "dueLanguage", "source", "externalId", "project", "priority",
     "recurrence", "sourceUpdatedAt", "sourcePayload", "createdAt", "brief",
     "nextAction", "closureCondition", "waitingOn", "reviewDate", "blocker", "artefacts",

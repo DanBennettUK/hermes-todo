@@ -27,6 +27,7 @@ from hermes_todo_store import (
     import_tasks,
     link_task_session,
     resolve_db_path,
+    reorder_task,
     search_tasks,
     update_task,
 )
@@ -806,6 +807,49 @@ class HermesTodoStoreTests(unittest.TestCase):
         )
         self.assertIsNone(cleared["task"]["closureNote"])
         self.assertEqual(cleared["task"]["closureEvidence"], [])
+
+    def test_update_task_accepts_position(self) -> None:
+        created = create_task("Positionable", return_board=False)
+        updated = update_task(created["task"]["id"], {"position": 7}, return_board=False)
+        self.assertEqual(updated["task"]["position"], 7.0)
+
+    def test_reorder_rebalances_when_midpoint_saturates(self) -> None:
+        first = create_task("First", return_board=False)["task"]
+        second = create_task("Second", return_board=False)["task"]
+        third = create_task("Third", return_board=False)["task"]
+        update_task(first["id"], {"position": 1.0}, return_board=False)
+        update_task(second["id"], {"position": 1.0}, return_board=False)
+        reordered = reorder_task(
+            third["id"],
+            after_id=first["id"],
+            before_id=second["id"],
+            return_board=False,
+        )
+        self.assertNotEqual(reordered["task"]["position"], 1.0)
+        board = get_board()
+        positions = [
+            task["position"]
+            for task in board["tasks"]
+            if task["id"] in {first["id"], second["id"], third["id"]}
+        ]
+        self.assertEqual(len(set(positions)), 3)
+
+    def test_import_keeps_category_and_position_off_legacy_fields(self) -> None:
+        imported = import_tasks(
+            [{"id": "imported-soon", "title": "Imported", "category": "soon", "position": 42}],
+            return_board=False,
+        )
+        task = imported["tasks"][0]
+        self.assertEqual(task["category"], "soon")
+        self.assertEqual(task["position"], 42.0)
+        conn = sqlite3.connect(resolve_db_path())
+        try:
+            payload = conn.execute(
+                "SELECT source_payload FROM tasks WHERE id = 'imported-soon'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertIsNone(payload)
 
     def test_search_reads_context_without_exposing_source_payload(self) -> None:
         create_task(
