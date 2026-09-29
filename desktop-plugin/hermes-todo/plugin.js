@@ -1657,19 +1657,38 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
     onPointerDown: handlePointerDown,
     children: [
       jsxs('div', {
-        className: 'flex min-w-0 flex-wrap items-start gap-x-2 gap-y-0.5',
+        className: 'flex min-w-0 items-start gap-x-2',
         children: [
           jsxs('div', {
-            className: 'min-w-0 flex-1 basis-48',
+            className: 'min-w-0 flex-1',
             children: [
               jsxs('div', {
-                className: cn(
-                  'break-words [overflow-wrap:anywhere] text-xs leading-5 text-(--ui-text-primary)',
-                  task.status === 'done' && 'text-(--ui-text-quaternary) line-through'
-                ),
+                className: 'flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5',
                 children: [
-                  PRIORITY_PILL[task.priority] ? jsx(PriorityPill, { priority: task.priority }) : null,
-                  task.title
+                  jsxs('div', {
+                    className: cn(
+                      'min-w-0 flex-1 break-words [overflow-wrap:anywhere] text-xs leading-5 text-(--ui-text-primary)',
+                      task.status === 'done' && 'text-(--ui-text-quaternary) line-through'
+                    ),
+                    style: { minWidth: 'min(100%, max-content)' },
+                    children: [
+                      PRIORITY_PILL[task.priority] ? jsx(PriorityPill, { priority: task.priority }) : null,
+                      task.title
+                    ]
+                  }),
+                  jsxs('div', {
+                    className: 'flex shrink-0 items-baseline gap-0.5 whitespace-nowrap',
+                    children: [
+                      due ? jsx('span', {
+                        className: cn(
+                          'text-[0.625rem] text-(--ui-text-quaternary)',
+                          due.startsWith('Overdue') && 'font-medium text-(--ui-text-secondary)'
+                        ),
+                        children: `${due} ·`
+                      }, 'due-label') : null,
+                      jsx(EstimateButton, { disabled, minutes: task.estimate, onClick: () => void cycleEstimate(task) })
+                    ]
+                  })
                 ]
               }),
               task.brief && jsx('div', {
@@ -1731,16 +1750,8 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
             ]
           }),
           jsxs('div', {
-            className: 'ms-auto flex shrink-0 items-center gap-0.5 self-start',
+            className: 'flex shrink-0 items-center gap-0.5 self-start',
             children: [
-              due ? jsx('span', {
-                className: cn(
-                  'mr-0.5 whitespace-nowrap text-[0.625rem] text-(--ui-text-quaternary)',
-                  due.startsWith('Overdue') && 'font-medium text-(--ui-text-secondary)'
-                ),
-                children: `${due} ·`
-              }, 'due-label') : null,
-              jsx(EstimateButton, { disabled, minutes: task.estimate, onClick: () => void cycleEstimate(task) }),
               jsx(IconButton, {
                 disabled,
                 expanded: editing,
