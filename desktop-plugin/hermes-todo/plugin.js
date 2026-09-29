@@ -1667,10 +1667,10 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
                 children: [
                   jsxs('div', {
                     className: cn(
-                      'min-w-0 flex-1 break-words [overflow-wrap:anywhere] text-xs leading-5 text-(--ui-text-primary)',
+                      'max-w-full break-words [overflow-wrap:anywhere] text-xs leading-5 text-(--ui-text-primary)',
                       task.status === 'done' && 'text-(--ui-text-quaternary) line-through'
                     ),
-                    style: { minWidth: 'min(100%, max-content)' },
+                    style: { width: 'max-content', maxWidth: '100%', flexShrink: 0 },
                     children: [
                       PRIORITY_PILL[task.priority] ? jsx(PriorityPill, { priority: task.priority }) : null,
                       task.title
