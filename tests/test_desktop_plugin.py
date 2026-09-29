@@ -34,6 +34,8 @@ class HermesTodoDesktopContractTests(unittest.TestCase):
         self.assertIn("expectedRevision: snapshot.revision", source)
         self.assertIn("?envelope=result", source)
         self.assertIn("const aPriority = a.priority || 99", source)
+        self.assertIn("label: 'P4'", source)
+        self.assertIn("PRIORITY_PILL[task.priority]", source)
         self.assertIn("jsx(BoardView, { remote, rowProps, sections })", source)
         self.assertNotIn("loadAgenda", source)
         self.assertNotIn("agendaQuery", source)

@@ -1582,7 +1582,8 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
 const PRIORITY_PILL = {
   1: { label: 'P1', background: 'color-mix(in srgb, #ef4444 22%, transparent)', color: '#f87171', border: '#ef4444' },
   2: { label: 'P2', background: 'color-mix(in srgb, #f59e0b 22%, transparent)', color: '#fbbf24', border: '#f59e0b' },
-  3: { label: 'P3', background: 'color-mix(in srgb, #3b82f6 22%, transparent)', color: '#60a5fa', border: '#3b82f6' }
+  3: { label: 'P3', background: 'color-mix(in srgb, #3b82f6 22%, transparent)', color: '#60a5fa', border: '#3b82f6' },
+  4: { label: 'P4', background: 'color-mix(in srgb, #64748b 22%, transparent)', color: '#94a3b8', border: '#64748b' }
 }
 
 function PriorityPill({ priority }) {
@@ -1667,7 +1668,7 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
                   task.status === 'done' && 'text-(--ui-text-quaternary) line-through'
                 ),
                 children: [
-                  task.priority && task.priority <= 3 ? jsx(PriorityPill, { priority: task.priority }) : null,
+                  PRIORITY_PILL[task.priority] ? jsx(PriorityPill, { priority: task.priority }) : null,
                   task.title
                 ]
               }),
