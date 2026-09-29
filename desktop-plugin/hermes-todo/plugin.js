@@ -1261,6 +1261,26 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
   })
 }
 
+const PRIORITY_PILL = {
+  1: { label: 'P1', background: 'color-mix(in srgb, #ef4444 22%, transparent)', color: '#f87171', border: '#ef4444' },
+  2: { label: 'P2', background: 'color-mix(in srgb, #f59e0b 22%, transparent)', color: '#fbbf24', border: '#f59e0b' },
+  3: { label: 'P3', background: 'color-mix(in srgb, #3b82f6 22%, transparent)', color: '#60a5fa', border: '#3b82f6' }
+}
+
+function PriorityPill({ priority }) {
+  const style = PRIORITY_PILL[priority]
+  if (!style) return null
+  return jsx('span', {
+    className: 'mr-1.5 inline-flex shrink-0 items-center rounded-full border px-1.5 text-[0.5625rem] font-semibold uppercase leading-[14px]',
+    style: {
+      background: style.background,
+      color: style.color,
+      borderColor: 'color-mix(in srgb, ' + style.border + ' 45%, transparent)'
+    },
+    children: style.label
+  })
+}
+
 function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pending, workingId, workWithHermes, prominent = false, reason }) {
   const [editing, setEditing] = useState(false)
   const disabled = pending || workingId === task.id
@@ -1339,30 +1359,41 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
     onPointerDown: handlePointerDown,
     children: [
       jsxs('div', {
-        className: 'flex min-w-0 items-start gap-2',
+        className: 'flex min-w-0 flex-wrap items-start gap-x-2 gap-y-0.5',
         children: [
           jsxs('div', {
-            className: 'min-w-0 flex-1',
+            className: 'min-w-0 flex-1 basis-48',
             children: [
-              jsx('div', {
+              jsxs('div', {
                 className: cn(
                   'break-words [overflow-wrap:anywhere] text-xs leading-5 text-(--ui-text-primary)',
                   task.status === 'done' && 'text-(--ui-text-quaternary) line-through'
                 ),
-                children: task.title
+                children: [
+                  task.priority && task.priority <= 3 ? jsx(PriorityPill, { priority: task.priority }) : null,
+                  task.title
+                ]
               }),
-              (reason || due || task.project || task.priority || task.owner || task.nextAction || task.recurrence || task.inbox) && jsx('div', {
-                className: cn(
-                  'mt-0.5 truncate text-[0.625rem] text-(--ui-text-quaternary)',
-                  due?.startsWith('Overdue') && 'font-medium text-(--ui-text-secondary)'
-                ),
-                children: [reason, task.inbox ? 'Inbox' : null, due, task.project, task.owner, task.priority ? `P${task.priority}` : null, task.nextAction, task.recurrenceRule || task.recurrence].filter(Boolean).join(' · ')
+              task.brief && jsx('div', {
+                className: 'mt-0.5 line-clamp-2 break-words text-[0.625rem] leading-4 text-(--ui-text-tertiary)',
+                children: task.brief.replace(/\s+/g, ' ').trim()
+              }),
+              (reason || task.project || task.owner || task.nextAction || task.recurrence) && jsx('div', {
+                className: 'mt-0.5 truncate text-[0.625rem] text-(--ui-text-quaternary)',
+                children: [reason, task.project, task.owner, task.nextAction, task.recurrenceRule || task.recurrence].filter(Boolean).join(' · ')
               })
             ]
           }),
           jsxs('div', {
-            className: 'flex shrink-0 items-center gap-0.5 self-start',
+            className: 'ms-auto flex shrink-0 items-center gap-0.5 self-start',
             children: [
+              due ? jsx('span', {
+                className: cn(
+                  'mr-0.5 whitespace-nowrap text-[0.625rem] text-(--ui-text-quaternary)',
+                  due.startsWith('Overdue') && 'font-medium text-(--ui-text-secondary)'
+                ),
+                children: `${due} ·`
+              }, 'due-label') : null,
               jsx(EstimateButton, { disabled, minutes: task.estimate, onClick: () => void cycleEstimate(task) }),
               jsx(IconButton, {
                 disabled,
