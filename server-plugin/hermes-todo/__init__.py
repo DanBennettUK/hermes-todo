@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from . import todo_tool
 from .cli import register_cli, todo_command
+
+_SKILL_MD = Path(__file__).resolve().parent / "skills" / "hermes-todo-task" / "SKILL.md"
 
 
 def register(ctx) -> None:
@@ -27,3 +31,13 @@ def register(ctx) -> None:
         emoji="\U0001f4dd",
         is_async=False,
     )
+    try:
+        ctx.register_skill(
+            "hermes-todo-task",
+            _SKILL_MD,
+            description="Use when working a Hermes Todo task. Board stays truthful.",
+            frontmatter={"version": "1.0.0", "tags": ["tasks", "todo", "project-management"]},
+        )
+    except (FileNotFoundError, ValueError):
+        # The bundled skill file is missing or invalid; the tool and CLI keep working.
+        pass

@@ -59,7 +59,9 @@ function buildWorkPrompt(task) {
     'Start a dedicated work session for this Hermes Todo task.',
     ...context,
     '',
-    'Treat the Hermes Todo task as the authoritative work item. Help me make progress now: identify the smallest useful next action, then do safe work directly where you can. Keep the task updated when its status or plan genuinely changes. Record closure evidence truthfully; never describe an external delivery as verified when it is only drafted or locally checked.'
+    'First action: load the task skill (skill_view name `hermes-todo:hermes-todo-task`, or bare `hermes-todo-task` when the plugin namespace is unavailable) and follow it for the whole session. It teaches you to keep this task truthful while you work: update next_action as you go, record partial progress and percentages in the brief, set waiting/blocked with clear reasons, store artefacts, and mark done only when the closure condition holds and the user confirms.',
+    'Second action: if this task needs multiple autonomous turns, start a goal with /goal using the closure condition as the outcome contract (done-when form) and name concrete verification. The skill shows the exact shape.',
+    'Then help me make progress now: identify the smallest useful next action, and do safe work directly where you can. Record closure evidence truthfully; never describe an external delivery as verified when it is only drafted or locally checked.'
   ].join('\n')
 }
 
