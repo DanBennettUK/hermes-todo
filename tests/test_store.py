@@ -952,6 +952,47 @@ class HermesTodoStoreTests(unittest.TestCase):
         self.assertEqual(found["total"], 1)
         self.assertEqual(found["tasks"][0]["id"], task["id"])
 
+    def test_generated_occurrence_returns_copied_open_subtasks(self) -> None:
+        created = create_task(
+            "Recurring checklist",
+            due_date="2026-08-31",
+            recurrence_rule="monthly",
+            return_board=False,
+        )["task"]
+        create_subtask(created["id"], "Open item", return_board=False)
+        done_item = create_subtask(created["id"], "Done item", return_board=False)
+        update_subtask(created["id"], done_item["subtask"]["id"], done=True, return_board=False)
+        completed = update_task(created["id"], {"status": "done"}, return_board=False)
+        generated = completed["generatedTask"]
+        self.assertEqual(generated["subtaskCount"], 1)
+        self.assertEqual(generated["subtasks"][0]["title"], "Open item")
+        self.assertFalse(generated["subtasks"][0]["done"])
+
+    def test_import_preserves_subtasks(self) -> None:
+        imported = import_tasks(
+            [{
+                "id": "imported-with-subs",
+                "title": "Imported parent",
+                "subtasks": [
+                    {"title": "First", "done": False},
+                    {"title": "Second", "done": True},
+                ],
+            }],
+            return_board=False,
+        )
+        task = imported["tasks"][0]
+        self.assertEqual(task["subtaskCount"], 2)
+        self.assertEqual([item["title"] for item in task["subtasks"]], ["First", "Second"])
+        self.assertEqual([item["done"] for item in task["subtasks"]], [False, True])
+        conn = sqlite3.connect(resolve_db_path())
+        try:
+            payload = conn.execute(
+                "SELECT source_payload FROM tasks WHERE id = 'imported-with-subs'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertIsNone(payload)
+
 
 if __name__ == "__main__":
     unittest.main()

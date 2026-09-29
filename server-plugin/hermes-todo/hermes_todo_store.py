@@ -1529,7 +1529,9 @@ def _generate_next_occurrence(
         "SELECT * FROM tasks WHERE occurrence_id = ?", (occurrence_id,)
     ).fetchone()
     if existing is not None:
-        return _row_to_task(existing), False
+        generated = _row_to_task(existing)
+        _attach_subtasks(conn, [generated])
+        return generated, False
     next_due_date, next_due_at = _next_recurrence_values(row)
     values = {
         "id": uuid.uuid4().hex,
@@ -1612,7 +1614,9 @@ def _generate_next_occurrence(
         created_at=now,
     )
     generated_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (values["id"],)).fetchone()
-    return _row_to_task(generated_row), True
+    generated = _row_to_task(generated_row)
+    _attach_subtasks(conn, [generated])
+    return generated, True
 
 
 def update_task(
@@ -1721,6 +1725,36 @@ def _next_subtask_position(conn: sqlite3.Connection, task_id: str) -> float:
     row = conn.execute("SELECT MAX(position) FROM subtasks WHERE task_id = ?", (task_id,)).fetchone()
     max_position = float(row[0]) if row and row[0] is not None else 0.0
     return max_position + SUBTASK_POSITION_STEP
+
+
+def _import_subtasks(conn: sqlite3.Connection, task_id: str, raw_subtasks: Any, now: str) -> None:
+    if raw_subtasks is None:
+        return
+    if not isinstance(raw_subtasks, list):
+        raise BoardError("Imported subtasks must be a list")
+    if len(raw_subtasks) > MAX_SUBTASKS:
+        raise BoardError(f"A task may have at most {MAX_SUBTASKS} subtasks")
+    for index, item in enumerate(raw_subtasks, start=1):
+        if not isinstance(item, dict):
+            raise BoardError(f"Imported subtask {index} must be an object")
+        title = _clean_title(item.get("title"))
+        done = _clean_bool(item.get("done", False), "Subtask done")
+        conn.execute(
+            """
+            INSERT INTO subtasks(id, task_id, title, done, position, created_at, updated_at, completed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                uuid.uuid4().hex,
+                task_id,
+                title,
+                1 if done else 0,
+                index * SUBTASK_POSITION_STEP,
+                now,
+                now,
+                now if done else None,
+            ),
+        )
 
 
 def _subtask_insert_bounds(
@@ -2530,7 +2564,7 @@ _IMPORT_KEYS = {
     "nextAction", "closureCondition", "waitingOn", "reviewDate", "blocker", "artefacts",
     "owner", "executionMode", "approvalState", "inbox", "closureNote", "closureEvidence",
     "recurrenceRule", "recurrenceTimezone", "seriesId", "occurrenceId", "occurrenceNumber",
-    "sessionId", "sessionState", "updatedAt", "completedAt",
+    "sessionId", "sessionState", "updatedAt", "completedAt", "subtasks",
 }
 
 
@@ -2686,6 +2720,7 @@ def import_tasks(
             if values["position"] is None:
                 values["position"] = _next_position_on_conn(conn)
             _insert_values(conn, values)
+            _import_subtasks(conn, values["id"], raw.get("subtasks"), values["created_at"])
             _append_event(
                 conn, values["id"], "task.created",
                 data={"plan": values["plan"], "status": values["status"], "inbox": bool(values["inbox"]), "imported": True},
@@ -2707,6 +2742,7 @@ def import_tasks(
                 for task_id in inserted_ids
             ],
         }
+        _attach_subtasks(conn, result["tasks"])
         conn.commit()
         return _return_mutation(conn, result, return_board)
     except sqlite3.IntegrityError as exc:
