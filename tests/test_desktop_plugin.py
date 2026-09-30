@@ -148,5 +148,207 @@ class HermesTodoDesktopContractTests(unittest.TestCase):
         self.assertIn("timeZone: taskTimeZone", source)
 
 
+    def _run_drag_probe(self, body: str) -> str:
+        """Execute the real drag lifecycle from plugin.js in Node with DOM stubs."""
+        source = PLUGIN_SOURCE.read_text(encoding="utf-8")
+        start = source.index("const dragPointerState = {")
+        end = source.index("function resolveDropTarget(")
+        # endPointerDrag + beginPointerDrag + the row-level press handler.
+        press_start = source.index("  const handlePointerDown = event => {")
+        press_end = source.index("  return jsxs('div', {", press_start)
+        harness = f"""
+{source[start:end]}
+{source[press_start:press_end]}
+const listeners = {{}}
+const removed = []
+// The row component supplies these; the extracted handler closes over them.
+var draggable = true
+var task = null
+globalThis.window = {{
+  addEventListener: (type, fn) => {{ (listeners[type] ||= []).push(fn) }},
+  removeEventListener: (type, fn) => {{
+    removed.push(type)
+    const bucket = listeners[type] || []
+    const at = bucket.indexOf(fn)
+    if (at >= 0) bucket.splice(at, 1)
+  }}
+}}
+globalThis.document = {{
+  body: {{
+    style: {{}},
+    appendChild: node => {{ globalThis.__ghost = node; node.parentNode = globalThis.document.body }},
+    removeChild: child => {{ globalThis.__ghostRemoved = true; child.parentNode = null }}
+  }},
+  createElement: () => ({{ style: {{}}, textContent: '', parentNode: null }}),
+  querySelector: () => null,
+  querySelectorAll: () => [],
+  addEventListener: () => {{}}
+}}
+globalThis.setDragActive = value => {{ globalThis.__dragActive = value }}
+globalThis.clearDropIndicator = () => {{ globalThis.__indicatorCleared = (globalThis.__indicatorCleared || 0) + 1 }}
+globalThis.updateDropIndicator = () => {{}}
+globalThis.dropTaskAt = (task, x, y) => {{ globalThis.__dropped = [task.id, x, y] }}
+globalThis.setTimeout = () => 0
+globalThis.clearTimeout = () => {{}}
+
+function fire(type, event) {{
+  for (const fn of [...(listeners[type] || [])]) fn(event)
+}}
+function liveCount() {{
+  return Object.values(listeners).reduce((total, bucket) => total + bucket.length, 0)
+}}
+{body}
+"""
+        completed = subprocess.run(
+            ["node", "--input-type=module", "-e", harness],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return completed.stdout
+
+    def test_drag_cancellation_above_threshold_clears_everything(self) -> None:
+        out = self._run_drag_probe(
+            """
+task = { id: 't1', title: 'Move me' }
+const row = { getBoundingClientRect: () => ({ left: 0, top: 0 }) }
+handlePointerDown({
+  button: 0, pointerId: 7, clientX: 10, clientY: 10,
+  target: { closest: () => null }, currentTarget: row
+})
+fire('pointermove', { pointerId: 7, clientX: 60, clientY: 60 })
+const armedState = {
+  active: dragPointerState.active,
+  dragActive: globalThis.__dragActive,
+  userSelect: document.body.style.userSelect
+}
+fire('keydown', { key: 'Escape' })
+console.log(JSON.stringify({
+  armed: armedState,
+  after: {
+    active: dragPointerState.active,
+    task: dragPointerState.task,
+    pointerId: dragPointerState.pointerId,
+    ghost: dragPointerState.ghost,
+    cleanup: dragPointerState.cleanup,
+    dragActive: globalThis.__dragActive,
+    userSelect: document.body.style.userSelect,
+    listenersLeft: liveCount(),
+    dropped: globalThis.__dropped || null
+  }
+}))
+"""
+        )
+        state = json.loads(out.strip())["armed"]
+        self.assertTrue(state["active"], "threshold move should arm the drag")
+        self.assertEqual(state["userSelect"], "none")
+
+        after = json.loads(out.strip())["after"]
+        self.assertFalse(after["active"], "Escape must disarm an active drag")
+        self.assertIsNone(after["task"])
+        self.assertIsNone(after["pointerId"])
+        self.assertIsNone(after["ghost"])
+        self.assertIsNone(after["cleanup"])
+        self.assertFalse(after["dragActive"])
+        self.assertEqual(after["userSelect"], "", "userSelect must be restored")
+        self.assertEqual(after["listenersLeft"], 0, "every listener must be removed")
+        self.assertIsNone(after["dropped"], "a cancelled drag must not commit")
+
+    def test_drag_cancellation_below_threshold_disarms_without_ghosting(self) -> None:
+        out = self._run_drag_probe(
+            """
+task = { id: 't2', title: 'Armed only' }
+const row = { getBoundingClientRect: () => ({ left: 0, top: 0 }) }
+handlePointerDown({
+  button: 0, pointerId: 3, clientX: 10, clientY: 10,
+  target: { closest: () => null }, currentTarget: row
+})
+fire('pointermove', { pointerId: 3, clientX: 12, clientY: 12 })
+fire('keydown', { key: 'Escape' })
+console.log(JSON.stringify({
+  active: dragPointerState.active,
+  task: dragPointerState.task,
+  pointerId: dragPointerState.pointerId,
+  cleanup: dragPointerState.cleanup,
+  userSelect: document.body.style.userSelect,
+  listenersLeft: liveCount()
+}))
+"""
+        )
+        after = json.loads(out.strip())
+        self.assertFalse(after["active"])
+        self.assertIsNone(after["task"], "Escape below threshold must clear the pending task")
+        self.assertIsNone(after["pointerId"])
+        self.assertIsNone(after["cleanup"])
+        self.assertEqual(after["userSelect"], "")
+        self.assertEqual(after["listenersLeft"], 0, "armed-phase listeners must be removed")
+
+    def test_pointercancel_and_blur_both_disarm_the_drag(self) -> None:
+        for trigger, event in (
+            ("pointercancel", {"pointerId": 9}),
+            ("blur", {}),
+        ):
+            with self.subTest(trigger=trigger):
+                out = self._run_drag_probe(
+                    f"""
+task = {{ id: 't3', title: 'Cancel me' }}
+const row = {{ getBoundingClientRect: () => ({{ left: 0, top: 0 }}) }}
+handlePointerDown({{
+  button: 0, pointerId: 9, clientX: 10, clientY: 10,
+  target: {{ closest: () => null }}, currentTarget: row
+}})
+fire('pointermove', {{ pointerId: 9, clientX: 80, clientY: 80 }})
+fire('{trigger}', {json.dumps(event)})
+console.log(JSON.stringify({{
+  active: dragPointerState.active,
+  task: dragPointerState.task,
+  listenersLeft: liveCount(),
+  dropped: globalThis.__dropped || null
+}}))
+"""
+                )
+                after = json.loads(out.strip())
+                self.assertFalse(after["active"], f"{trigger} must disarm")
+                self.assertIsNone(after["task"])
+                self.assertEqual(after["listenersLeft"], 0, f"{trigger} must detach listeners")
+                self.assertIsNone(after["dropped"], f"{trigger} must not commit a drop")
+
+    def test_escape_key_event_without_pointer_id_still_cancels(self) -> None:
+        out = self._run_drag_probe(
+            """
+task = { id: 't4', title: 'Keyboard escape' }
+const row = { getBoundingClientRect: () => ({ left: 0, top: 0 }) }
+handlePointerDown({
+  button: 0, pointerId: undefined, clientX: 10, clientY: 10,
+  target: { closest: () => null }, currentTarget: row
+})
+fire('pointermove', { pointerId: undefined, clientX: 90, clientY: 90 })
+const armed = dragPointerState.active
+// A KeyboardEvent has no pointerId; it must not be filtered out by the guard.
+fire('keydown', { key: 'Escape' })
+console.log(JSON.stringify({
+  armed,
+  active: dragPointerState.active,
+  listenersLeft: liveCount()
+}))
+"""
+        )
+        after = json.loads(out.strip())
+        self.assertTrue(after["armed"])
+        self.assertFalse(after["active"], "an Escape key event has no pointerId and must cancel")
+        self.assertEqual(after["listenersLeft"], 0)
+
+    def test_drop_indicator_resolves_a_line_on_the_first_move(self) -> None:
+        source = PLUGIN_SOURCE.read_text(encoding="utf-8")
+        body = source[source.index("function updateDropIndicator("):source.index("function clearDropIndicator(")]
+        self.assertNotIn(
+            "if (!dropContext.indicator) return",
+            body,
+            "the first drag must be able to show an indicator",
+        )
+
+
+
 if __name__ == "__main__":
     unittest.main()
