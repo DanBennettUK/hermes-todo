@@ -27,6 +27,7 @@ from hermes_todo_store import (  # noqa: E402
     get_task,
     import_tasks,
     link_task_session,
+    reorder_task,
     search_tasks,
     update_task,
 )
@@ -44,6 +45,7 @@ class TaskCreateFields(StrictModel):
     plan: str = "today"
     status: str = "open"
     category: str = "today"
+    position: float | None = None
     due_date: str | None = Field(default=None, alias="dueDate")
     due_at: str | None = Field(default=None, alias="dueAt")
     due_timezone: str | None = Field(default=None, alias="dueTimezone", max_length=100)
@@ -85,6 +87,7 @@ class TaskPatch(StrictModel):
     plan: str | None = None
     status: str | None = None
     category: str | None = None
+    position: float | None = None
     due_date: str | None = Field(default=None, alias="dueDate")
     due_at: str | None = Field(default=None, alias="dueAt")
     due_timezone: str | None = Field(default=None, alias="dueTimezone", max_length=100)
@@ -127,6 +130,15 @@ class ImportBody(StrictModel):
 class SessionLinkBody(StrictModel):
     session_id: str = Field(alias="sessionId", min_length=1, max_length=300)
     start_now: bool = Field(default=True, alias="startNow")
+    expected_revision: int | None = Field(default=None, alias="expectedRevision", ge=0)
+    actor: str | None = Field(default=None, max_length=200)
+    event_source: str | None = Field(default=None, alias="eventSource", max_length=100)
+
+
+class ReorderBody(StrictModel):
+    category: str | None = None
+    before_id: str | None = Field(default=None, alias="beforeId", min_length=1, max_length=200)
+    after_id: str | None = Field(default=None, alias="afterId", min_length=1, max_length=200)
     expected_revision: int | None = Field(default=None, alias="expectedRevision", ge=0)
     actor: str | None = Field(default=None, max_length=200)
     event_source: str | None = Field(default=None, alias="eventSource", max_length=100)
@@ -268,6 +280,29 @@ def patch_task(task_id: str, body: TaskPatch, envelope: str = "board"):
         return update_task(
             task_id,
             changes,
+            expected_revision=expected_revision,
+            actor=actor,
+            event_source=event_source,
+            return_board=_envelope(envelope),
+        )
+    except RevisionConflict as exc:
+        raise _conflict(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    except BoardError as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.post("/tasks/{task_id}/reorder")
+def reorder(task_id: str, body: ReorderBody, envelope: str = "board"):
+    payload = body.model_dump()
+    expected_revision, actor, event_source = _meta(payload)
+    try:
+        return reorder_task(
+            task_id,
+            category=payload["category"],
+            before_id=payload["before_id"],
+            after_id=payload["after_id"],
             expected_revision=expected_revision,
             actor=actor,
             event_source=event_source,

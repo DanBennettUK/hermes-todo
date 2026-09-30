@@ -22,7 +22,8 @@ try:
         get_task,
         import_tasks,
         link_task_session,
-            search_tasks,
+        reorder_task,
+        search_tasks,
         update_task,
     )
 except ImportError:  # Direct source-tree execution and tests.
@@ -39,7 +40,8 @@ except ImportError:  # Direct source-tree execution and tests.
         get_task,
         import_tasks,
         link_task_session,
-            search_tasks,
+        reorder_task,
+        search_tasks,
         update_task,
     )
 
@@ -195,6 +197,13 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     recurrence_parser = actions.add_parser("recurrence-next", help="Idempotently generate the next occurrence")
     recurrence_parser.add_argument("task_id")
     _mutation_options(recurrence_parser)
+
+    reorder_parser = actions.add_parser("reorder", help="Position a task inside its category")
+    reorder_parser.add_argument("task_id")
+    reorder_parser.add_argument("--category", choices=["today", "tomorrow", "this-week", "this-month", "soon"])
+    reorder_parser.add_argument("--before")
+    reorder_parser.add_argument("--after")
+    _mutation_options(reorder_parser)
 
     follow_parser = actions.add_parser("follow-up", help="Atomically complete a task and create its successor")
     follow_parser.add_argument("task_id")
@@ -406,6 +415,14 @@ def todo_command(args: argparse.Namespace) -> int:
             output = complete_task_session(args.task_id, **_mutation_kwargs(args))
         elif action == "recurrence-next":
             output = generate_next_occurrence(args.task_id, **_mutation_kwargs(args))
+        elif action == "reorder":
+            output = reorder_task(
+                args.task_id,
+                category=getattr(args, "category", None),
+                before_id=getattr(args, "before", None),
+                after_id=getattr(args, "after", None),
+                **_mutation_kwargs(args),
+            )
         elif action == "follow-up":
             mutation_kwargs = _mutation_kwargs(args)
             if args.closure_note is not None:

@@ -2,6 +2,8 @@
 
 A compact, shared task board for Hermes Desktop and Hermes agents. **Todo** keeps planning position, workflow status, and deadlines independent while using one profile-scoped SQLite database.
 
+For positional reorder requests, `afterId` and `beforeId` identify the immediate neighbours of the destination gap, with the moving task excluded. When both are supplied, they must be distinct, in the target category, and adjacent in that order. Invalid gaps are rejected without changing the board revision or task history. Single-neighbour requests place the task immediately before or after that neighbour. Use `expectedRevision` to detect concurrent board changes; it does not replace neighbour validation.
+
 ## Features
 
 - Planning: **Now**, **Today**, **Later** (with one open Now task)
