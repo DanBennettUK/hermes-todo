@@ -14,6 +14,7 @@ import sqlite3
 import uuid
 import math
 from calendar import monthrange
+from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -358,19 +359,25 @@ def _connect() -> sqlite3.Connection:
     os.close(descriptor)
     _chmod_private_files(path)
     conn = sqlite3.connect(path, timeout=5.0, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 5000")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS board_meta (
-            key TEXT PRIMARY KEY,
-            value INTEGER NOT NULL
-        );
-        INSERT OR IGNORE INTO board_meta(key, value) VALUES ('revision', 0);
-        """
-    )
-    _migrate_schema(conn)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS board_meta (
+                key TEXT PRIMARY KEY,
+                value INTEGER NOT NULL
+            );
+            INSERT OR IGNORE INTO board_meta(key, value) VALUES ('revision', 0);
+            """
+        )
+        _migrate_schema(conn)
+    except BaseException:
+        # A failed migration must not strand the handle: callers never receive
+        # this connection, so nothing else can close it.
+        conn.close()
+        raise
     _chmod_private_files(path)
     return conn
 
@@ -759,12 +766,12 @@ def _return_mutation(
 
 
 def get_board() -> dict[str, Any]:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         return _read_board(conn)
 
 
 def get_task(task_id: str) -> dict[str, Any]:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if row is None:
             raise KeyError(task_id)
@@ -1636,7 +1643,7 @@ def delete_task(
 def get_history(task_id: str, *, limit: int = 100) -> dict[str, Any]:
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > 200:
         raise BoardError("History limit must be from 1 to 200")
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         task_exists = conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone()
         event_exists = conn.execute(
             "SELECT 1 FROM task_events WHERE task_id = ?", (task_id,)
@@ -1699,7 +1706,7 @@ def search_tasks(
     clean_owner = _clean_optional_text(owner, "Owner", 200)
     if inbox is not None:
         inbox = _clean_bool(inbox, "Inbox")
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         rows = conn.execute("SELECT * FROM tasks ORDER BY updated_at DESC, id").fetchall()
         matched = []
         needle = clean_query.casefold() if clean_query else None
@@ -1784,7 +1791,7 @@ def get_agenda(
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
         raise BoardError("Agenda limit must be from 1 to 200")
     stale_before = agenda_date - timedelta(days=stale_days)
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         rows = conn.execute("SELECT * FROM tasks WHERE status <> 'done'").fetchall()
         candidates: list[dict[str, Any]] = []
         for row in rows:

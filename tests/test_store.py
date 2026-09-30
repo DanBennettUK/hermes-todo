@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PLUGIN_ROOT))
@@ -33,6 +34,14 @@ from hermes_todo_store import (
 )
 
 
+def skip_without_tzdata(case: unittest.TestCase) -> None:
+    """Windows needs the ``tzdata`` package before ZoneInfo can resolve any key."""
+    try:
+        ZoneInfo("UTC")
+    except Exception:
+        case.skipTest("IANA timezone database unavailable (pip install tzdata)")
+
+
 class HermesTodoStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -55,6 +64,8 @@ class HermesTodoStoreTests(unittest.TestCase):
         self.assertEqual(store.resolve_hermes_home(), expected)
 
     def test_database_directory_and_sqlite_files_are_private(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX permission bits are not modelled on Windows")
         old_umask = os.umask(0)
         try:
             conn = store._connect()
@@ -270,6 +281,7 @@ class HermesTodoStoreTests(unittest.TestCase):
         )
 
     def test_import_rejects_partial_inconsistent_and_duplicate_occurrence_identities(self) -> None:
+        skip_without_tzdata(self)
         invalid = (
             {"title": "Series only", "seriesId": "series-a"},
             {
@@ -533,6 +545,7 @@ class HermesTodoStoreTests(unittest.TestCase):
             conn.close()
 
     def test_optional_occurrence_index_does_not_block_existing_v4_database(self) -> None:
+        skip_without_tzdata(self)
         path = resolve_db_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(path)
@@ -614,6 +627,7 @@ class HermesTodoStoreTests(unittest.TestCase):
         self.assertEqual((started_task["plan"], started_task["inbox"]), ("now", False))
 
     def test_agenda_is_bounded_explains_reasons_and_does_not_rewrite_plan(self) -> None:
+        skip_without_tzdata(self)
         captured = create_task("Triage me", plan="later", inbox=True)["tasks"][0]
         create_task("Current focus", plan="now")
         create_task("Due today", plan="later", due_date="2026-08-09")
@@ -660,6 +674,7 @@ class HermesTodoStoreTests(unittest.TestCase):
         self.assertTrue(get_agenda(on_date="2026-08-09", limit=1)["truncated"])
 
     def test_agenda_uses_due_timezone_for_naive_deadlines_with_safe_fallback(self) -> None:
+        skip_without_tzdata(self)
         create_task(
             "Amsterdam midnight",
             plan="later",
@@ -707,6 +722,7 @@ class HermesTodoStoreTests(unittest.TestCase):
         self.assertIsNone(task["nextAction"])
 
     def test_recurrence_generates_stable_idempotent_occurrences(self) -> None:
+        skip_without_tzdata(self)
         first_board = create_task(
             "Month end",
             due_date="2026-08-31",
@@ -738,6 +754,7 @@ class HermesTodoStoreTests(unittest.TestCase):
         self.assertEqual(sum(task["title"] == "Legacy prose" for task in after_legacy_done["tasks"]), 1)
 
     def test_timed_recurrence_preserves_local_clock_across_dst(self) -> None:
+        skip_without_tzdata(self)
         first = create_task(
             "Weekly local check",
             due_at="2026-03-28T09:00:00+01:00",
@@ -750,6 +767,7 @@ class HermesTodoStoreTests(unittest.TestCase):
         self.assertEqual(next_task["dueAt"], "2026-04-04T09:00:00+02:00")
 
     def test_timed_recurrence_normalises_nonexistent_dst_time(self) -> None:
+        skip_without_tzdata(self)
         first = create_task(
             "Weekly DST gap check",
             due_at="2026-03-22T02:30:00+01:00",
@@ -844,10 +862,17 @@ class HermesTodoStoreTests(unittest.TestCase):
         third = create_task("Third", return_board=False)["task"]
         update_task(first["id"], {"position": 1.0}, return_board=False)
         update_task(second["id"], {"position": 1.0}, return_board=False)
+        # Both anchors now share a position, so their order falls back to id.
+        # Read the real order instead of assuming First precedes Second.
+        current = {task["id"]: task for task in get_board()["tasks"]}
+        ordered = sorted(
+            (current[first["id"]], current[second["id"]]),
+            key=lambda task: (task["position"], task["createdAt"], task["id"]),
+        )
         reordered = reorder_task(
             third["id"],
-            after_id=first["id"],
-            before_id=second["id"],
+            after_id=ordered[0]["id"],
+            before_id=ordered[1]["id"],
             return_board=False,
         )
         self.assertNotEqual(reordered["task"]["position"], 1.0)

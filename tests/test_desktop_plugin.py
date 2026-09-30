@@ -85,9 +85,9 @@ class HermesTodoDesktopContractTests(unittest.TestCase):
         import { readFileSync } from 'node:fs'
         const source = readFileSync('./desktop-plugin/hermes-todo/plugin.js', 'utf8')
         const start = source.indexOf('function buildWorkPrompt(task) {')
-        const end = source.indexOf('\\n}\\n\\nfunction makeId()', start)
+        const end = source.indexOf('function makeId()', start)
         if (start < 0 || end < 0) throw new Error('inline buildWorkPrompt function not found')
-        const buildWorkPrompt = new Function(`${source.slice(start, end + 2)}; return buildWorkPrompt`)()
+        const buildWorkPrompt = new Function(`${source.slice(start, end)}; return buildWorkPrompt`)()
         const task = JSON.parse(readFileSync(0, 'utf8'))
         process.stdout.write(buildWorkPrompt(task))
         """
