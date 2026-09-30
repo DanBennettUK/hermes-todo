@@ -1252,13 +1252,22 @@ def _category_bounds_for_insert(
     after: sqlite3.Row | None,
 ) -> tuple[float, float]:
     """Open interval (lower, upper) for inserting task_id near its neighbours."""
+    if any(neighbour is not None and neighbour["id"] == task_id for neighbour in (before, after)):
+        raise BoardError("A task cannot be its own drop neighbour")
     if before is not None and after is not None:
+        neighbours = conn.execute(
+            "SELECT id FROM tasks WHERE category = ? AND id <> ? ORDER BY position, created_at, id",
+            (category, task_id),
+        ).fetchall()
+        ids = [row["id"] for row in neighbours]
+        if ids.index(before["id"]) != ids.index(after["id"]) + 1:
+            raise BoardError("Before and after tasks must be distinct, ordered adjacent neighbours")
         return float(after["position"]), float(before["position"])
     if before is not None:
         upper = float(before["position"])
         row = conn.execute(
             "SELECT MAX(position) FROM tasks WHERE category = ? AND position < ? AND id <> ?",
-            (category, upper, before["id"]),
+            (category, upper, task_id),
         ).fetchone()
         lower = float(row[0]) if row and row[0] is not None else upper - POSITION_STEP
         return lower, upper
@@ -1266,7 +1275,7 @@ def _category_bounds_for_insert(
         lower = float(after["position"])
         row = conn.execute(
             "SELECT MIN(position) FROM tasks WHERE category = ? AND position > ? AND id <> ?",
-            (category, lower, after["id"]),
+            (category, lower, task_id),
         ).fetchone()
         upper = float(row[0]) if row and row[0] is not None else lower + POSITION_STEP
         return lower, upper

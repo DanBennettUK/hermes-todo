@@ -372,6 +372,31 @@ class HermesTodoStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(BoardError, "UTF-8 bytes"):
             update_task(task_id, {"sourcePayload": {"value": "x" * MAX_SOURCE_PAYLOAD_BYTES}})
 
+    def test_import_stores_category_without_legacy_fields(self) -> None:
+        board = import_tasks(
+            [
+                {
+                    "id": "cat-import",
+                    "title": "Imported tomorrow",
+                    "category": "tomorrow",
+                    "unknownFlag": "retained",
+                }
+            ]
+        )
+        task = next(task for task in board["tasks"] if task["id"] == "cat-import")
+        self.assertEqual(task["category"], "tomorrow")
+
+        conn = sqlite3.connect(resolve_db_path())
+        try:
+            payload = conn.execute(
+                "SELECT source_payload FROM tasks WHERE id = 'cat-import'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        private_payload = json.loads(payload)
+        self.assertEqual(private_payload["legacyFields"], {"unknownFlag": "retained"})
+        self.assertNotIn("category", private_payload["legacyFields"])
+
     def test_import_does_not_replace_existing_now(self) -> None:
         existing = create_task("Existing focus", plan="now")
         existing_id = next(task["id"] for task in existing["tasks"] if task["plan"] == "now")
