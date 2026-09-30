@@ -348,13 +348,25 @@ Imported `sourcePayload` metadata is retained only in the profile-local SQLite d
 
 No build step or third-party runtime dependency is required for the store/CLI. The API is loaded inside Hermes, which supplies FastAPI and Pydantic. Python's standard-library timezone database must contain the selected IANA recurrence/agenda timezone.
 
+To run the full suite, including the tests that exercise the real routes and the IANA timezone paths, install the test-only packages into the same interpreter:
+
+```bash
+python3 -m pip install tzdata fastapi pydantic httpx
+npm ci --prefix tests/desktop
+```
+
+Without them those tests skip rather than fail, so a green run can hide a missing dependency.
+
 ```bash
 PYTHONPATH=server-plugin/hermes-todo python3 -m unittest discover -s tests -v
 python3 -m compileall -q server-plugin tests
 node --check desktop-plugin/hermes-todo/plugin.js
+node --test tests/desktop/lifecycle.test.cjs
 ```
 
 Desktop plugin files are uncompiled ESM: no JSX, bundler, or imports beyond the Hermes SDK, React, and `react/jsx-runtime`.
+
+The mounted desktop tests use React 18 with explicit SDK/DOM doubles. They cover completion confirmation, save draining on unmount, revision conflicts, deletion guards and drag cleanup. Workspace close/reopen is tested against an SDK double; a real Hermes host and visual layout are still outside this automated suite.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for storage and privacy details.
 

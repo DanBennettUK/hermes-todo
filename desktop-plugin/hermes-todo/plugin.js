@@ -2,6 +2,8 @@ import {
   Button,
   EmptyState,
   Input,
+  SegmentedControl,
+  PALETTE_AREA,
   Tip,
   cn,
   haptic,
@@ -20,9 +22,28 @@ const MIGRATION_KEY = 'remote-board-v1-migrated'
 const ESTIMATES = [15, 25, 45, 60]
 const PLANS = new Set(['now', 'today', 'later'])
 const STATUSES = new Set(['open', 'waiting', 'blocked', 'done'])
+const CATEGORIES = ['today', 'tomorrow', 'this-week', 'this-month', 'soon']
+const CATEGORY_SET = new Set(CATEGORIES)
+const CATEGORY_LABELS = {
+  today: 'Today',
+  tomorrow: 'Tomorrow',
+  'this-week': 'This Week',
+  'this-month': 'This Month',
+  soon: 'Soon'
+}
 const POLL_MS = 3000
+const DETAIL_TABS = [
+  { id: 'work', label: 'Work' },
+  { id: 'plan', label: 'Plan' },
+  { id: 'wait', label: 'Wait' },
+  { id: 'subs', label: 'Subs' },
+  { id: 'more', label: 'More' }
+]
+const AUTOSAVE_MS = 500
+const SUBTASK_DRAG_THRESHOLD_PX = 6
+const CONFIRM_COMPLETE_MS = 3000
 
-const emptyBoard = () => ({ version: 4, revision: 0, tasks: [] })
+const emptyBoard = () => ({ version: 7, revision: 0, tasks: [] })
 
 // Hermes Desktop evaluates disk plugins as one uncompiled ESM module loaded
 // from a blob URL. Keep this formatter inline: relative imports such as
@@ -36,6 +57,7 @@ function buildWorkPrompt(task) {
     task.project ? `Project: ${task.project}` : null,
     `Plan: ${task.plan}`,
     `Status: ${task.status}`,
+    task.category ? `Category: ${task.category}` : null,
     `Working estimate: ${task.estimate} minutes`,
     task.priority ? `Priority: P${task.priority}` : null,
     task.dueDate ? `Due date: ${task.dueDate}` : null,
@@ -52,6 +74,9 @@ function buildWorkPrompt(task) {
     `Execution mode: ${task.executionMode || 'manual'}`,
     `Approval state: ${task.approvalState || 'not-required'}`,
     task.artefacts?.length ? `Artefacts:\n${task.artefacts.map(value => `- ${value}`).join('\n')}` : null,
+    task.subtasks?.length
+      ? `Subtasks:\n${task.subtasks.map(item => `- [${item.done ? 'x' : ' '}] ${item.title}`).join('\n')}`
+      : null,
     task.source ? `Origin: ${task.source}${task.externalId ? ` (${task.externalId})` : ''}` : null
   ].filter(Boolean)
 
@@ -59,13 +84,143 @@ function buildWorkPrompt(task) {
     'Start a dedicated work session for this Hermes Todo task.',
     ...context,
     '',
-    'Treat the Hermes Todo task as the authoritative work item. Help me make progress now: identify the smallest useful next action, then do safe work directly where you can. Keep the task updated when its status or plan genuinely changes. Record closure evidence truthfully; never describe an external delivery as verified when it is only drafted or locally checked.'
+    'Treat the Hermes Todo task as the authoritative work item. Help me make progress now: identify the smallest useful next action, then do safe work directly where you can. Keep the task updated when its status or plan genuinely changes. Record closure evidence truthfully; never describe an external delivery as verified when it is only drafted or locally checked.',
+    'Then help me make progress now: identify the smallest useful next action, and do safe work directly where you can. Record closure evidence truthfully; never describe an external delivery as verified when it is only drafted or locally checked.'
   ].join('\n')
 }
 
 function makeId() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
   return `task-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+const dragPointerState = {
+  task: null,
+  startX: 0,
+  startY: 0,
+  active: false,
+  pointerId: null,
+  ghost: null,
+  offsetX: 0,
+  offsetY: 0,
+  cleanup: null
+}
+const DRAG_THRESHOLD_PX = 6
+
+// One teardown for both the armed (pre-threshold) and active phases. Escape and
+// window blur arrive as keyboard events with no pointerId, so every guard below
+// filters on the pointer only for pointer-typed events.
+function endPointerDrag(state, upEvent, commit) {
+  if (state.cleanup) {
+    state.cleanup()
+    state.cleanup = null
+  }
+  const task = state.task
+  const x = upEvent && Number.isFinite(upEvent.clientX) ? upEvent.clientX : 0
+  const y = upEvent && Number.isFinite(upEvent.clientY) ? upEvent.clientY : 0
+  document.body.style.userSelect = ''
+  setDragActive(false)
+  if (state.ghost?.parentNode) state.ghost.parentNode.removeChild(state.ghost)
+  clearDropIndicator()
+  state.task = null
+  state.active = false
+  state.pointerId = null
+  state.ghost = null
+  if (commit && task) dropTaskAt(task, x, y)
+}
+
+function beginPointerDrag(state, event) {
+  state.active = true
+  setDragActive(true)
+  document.body.style.userSelect = 'none'
+  const ghost = document.createElement('div')
+  ghost.textContent = state.task.title
+  ghost.style.cssText =
+    'position:fixed;z-index:9999;pointer-events:none;max-width:260px;padding:4px 10px;' +
+    'border-radius:6px;font-size:12px;line-height:18px;background:var(--ui-bg-elevated,#1f2937);' +
+    'color:var(--ui-text-primary,#e5e7eb);border:1px solid var(--ui-stroke-secondary,#374151);' +
+    'box-shadow:0 8px 24px rgba(0,0,0,0.35);opacity:0.95'
+  ghost.style.left = `${event.clientX - state.offsetX}px`
+  ghost.style.top = `${event.clientY - state.offsetY}px`
+  document.body.appendChild(ghost)
+  state.ghost = ghost
+}
+
+
+// Drop-target hit testing: find the drop category + index under the pointer
+function resolveDropTarget(x, y) {
+  const nowHost = document.querySelector('[data-todo-now]')
+  if (nowHost) {
+    const rect = nowHost.getBoundingClientRect()
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+      return { categoryId: 'now', index: 0 }
+    }
+  }
+  const inboxHost = document.querySelector('[data-todo-inbox]')
+  if (inboxHost) {
+    const rect = inboxHost.getBoundingClientRect()
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+      return { categoryId: 'inbox', index: 0 }
+    }
+  }
+  const sections = document.querySelectorAll('[data-todo-category]')
+  for (const section of sections) {
+    const rect = section.getBoundingClientRect()
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+      const categoryId = section.getAttribute('data-todo-category')
+      const rows = section.querySelectorAll('[data-todo-task]')
+      let index = rows.length
+      for (let i = 0; i < rows.length; i += 1) {
+        const rowRect = rows[i].getBoundingClientRect()
+        if (y < rowRect.top + rowRect.height / 2) {
+          index = i
+          break
+        }
+      }
+      return { categoryId, index }
+    }
+  }
+  return null
+}
+
+function dropTaskAt(task, x, y) {
+  const target = resolveDropTarget(x, y)
+  if (!target) return
+  if (!dropContext) return
+  if (target.categoryId === 'now') {
+    if (!dropContext.update) return
+    if (task.plan === 'now' && task.status === 'open' && !task.inbox) return
+    const changes = { plan: 'now', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }
+    dropContext.update(task.id, changes)
+    return
+  }
+  if (target.categoryId === 'inbox') {
+    if (!dropContext.update) return
+    if (task.inbox) return
+    if (task.status !== 'open' || task.plan === 'now') {
+      dropContext.update(task.id, { inbox: true, plan: 'later', status: 'open', waitingOn: null, reviewDate: null, blocker: null })
+    } else {
+      dropContext.update(task.id, { inbox: true, plan: 'later' })
+    }
+    return
+  }
+  if (task.inbox || task.plan === 'now') {
+    if (!dropContext.update) return
+    const changes = { category: target.categoryId, inbox: false }
+    if (task.plan === 'now') changes.plan = 'today'
+    dropContext.update(task.id, changes)
+    return
+  }
+  if (!dropContext.reorder) return
+  const siblings = (dropContext.sections[target.categoryId] || []).filter(item => item.id !== task.id)
+  const clamped = Math.max(0, Math.min(target.index, siblings.length))
+  const before = siblings[clamped]
+  const after = siblings[clamped - 1]
+  if (task.category === target.categoryId && !before && !after) return
+  const payload = { category: target.categoryId }
+  if (before) payload.beforeId = before.id
+  if (after) payload.afterId = after.id
+  dropContext.reorder(task.id, payload)
 }
 
 function legacyDimensions(lane) {
@@ -75,15 +230,13 @@ function legacyDimensions(lane) {
   return { plan: 'today', status: 'open' }
 }
 
-function sectionFor(task, today = localDateKey()) {
+function sectionFor(task) {
   if (task.status === 'done') return 'done'
   if (task.status === 'blocked') return 'blocked'
   if (task.status === 'waiting') return 'waiting'
   if (task.inbox) return 'inbox'
   if (task.plan === 'now') return 'now'
-  const due = deadlineDateKey(task)
-  if (due && due <= today) return 'today'
-  return task.plan
+  return CATEGORY_SET.has(task.category) ? task.category : 'today'
 }
 
 function normaliseTask(task) {
@@ -91,12 +244,18 @@ function normaliseTask(task) {
   const legacy = legacyDimensions(task.lane)
   const plan = PLANS.has(task.plan) ? task.plan : legacy.plan
   const status = STATUSES.has(task.status) ? task.status : legacy.status
+  const category = CATEGORY_SET.has(task.category)
+    ? task.category
+    : plan === 'later' ? 'soon' : 'today'
+  const position = Number.isFinite(Number(task.position)) ? Number(task.position) : 0
   return {
     ...task,
     id: typeof task.id === 'string' && task.id ? task.id : makeId(),
     title: task.title.trim().slice(0, 500),
     plan,
     status,
+    category,
+    position,
     lane: status === 'open' ? plan : status,
     estimate: Number.isFinite(Number(task.estimate)) ? Number(task.estimate) : 25,
     dueDate: typeof task.dueDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(task.dueDate) ? task.dueDate : null,
@@ -125,6 +284,19 @@ function normaliseTask(task) {
     occurrenceNumber: Number.isInteger(task.occurrenceNumber) ? task.occurrenceNumber : null,
     sessionId: typeof task.sessionId === 'string' && task.sessionId ? task.sessionId : null,
     sessionState: ['active', 'completed'].includes(task.sessionState) ? task.sessionState : null,
+    subtasks: Array.isArray(task.subtasks)
+      ? task.subtasks
+        .filter(item => item && typeof item === 'object' && typeof item.title === 'string')
+        .map(item => ({
+          id: typeof item.id === 'string' && item.id ? item.id : makeId(),
+          title: item.title.trim().slice(0, 500),
+          done: item.done === true
+        }))
+      : [],
+    subtaskCount: Number.isInteger(task.subtaskCount) ? task.subtaskCount : (Array.isArray(task.subtasks) ? task.subtasks.length : 0),
+    subtaskDoneCount: Number.isInteger(task.subtaskDoneCount)
+      ? task.subtaskDoneCount
+      : (Array.isArray(task.subtasks) ? task.subtasks.filter(item => item && item.done === true).length : 0),
     source: typeof task.source === 'string' && task.source ? task.source : null,
     externalId: typeof task.externalId === 'string' && task.externalId ? task.externalId : null,
     createdAt: task.createdAt ?? new Date().toISOString(),
@@ -146,7 +318,7 @@ function normaliseBoard(value) {
     keptNow = true
   }
   return {
-    version: Number(value.version) || 4,
+    version: Number(value.version) || 7,
     revision: Number(value.revision) || 0,
     tasks
   }
@@ -158,6 +330,15 @@ async function sharedBoardRest(ctx, path, options = {}) {
 
 function errorText(error) {
   return error instanceof Error ? error.message : String(error || 'unknown error')
+}
+
+function reportCleanupFailures(failures, consequence) {
+  if (!failures.length) return
+  const detail = failures.map(errorText).filter(Boolean).join('; ')
+  host.notify({
+    kind: 'warning',
+    message: `Cleanup failed: ${consequence}.${detail ? ` (${detail})` : ''}`
+  })
 }
 
 async function loadSharedBoard(ctx) {
@@ -232,17 +413,6 @@ function zonedDateTimeToDate(value, timeZone) {
   return candidate
 }
 
-function deadlineDateKey(task) {
-  if (task.dueDate) return task.dueDate
-  if (!task.dueAt) return null
-  const dueText = String(task.dueAt)
-  const taskTimeZone = safeTimeZone(task.dueTimezone)
-  const naiveInTaskZone = !/(?:Z|[+-]\d{2}:\d{2})$/i.test(dueText) && Boolean(taskTimeZone)
-  const due = naiveInTaskZone ? zonedDateTimeToDate(dueText, taskTimeZone) : new Date(dueText)
-  if (Number.isNaN(due.getTime())) return null
-  return localDateKey(due)
-}
-
 function localDateTimeValue(value, timeZone) {
   if (!value) return ''
   const text = String(value)
@@ -279,6 +449,33 @@ function optimisticPatch(board, id, changes) {
   nextTarget.completedAt = nextTarget.status === 'done' ? target.completedAt || now : null
   nextTarget.updatedAt = now
   nextTarget.lane = nextTarget.status === 'open' ? nextTarget.plan : nextTarget.status
+  if (Object.prototype.hasOwnProperty.call(changes, 'category') && !CATEGORY_SET.has(nextTarget.category)) {
+    nextTarget.category = 'today'
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(changes, 'beforeId') ||
+    Object.prototype.hasOwnProperty.call(changes, 'afterId') ||
+    (Object.prototype.hasOwnProperty.call(changes, 'category') && changes.category !== target.category)
+  ) {
+    const siblings = board.tasks
+      .filter(task => task.id !== id && task.category === nextTarget.category && task.status !== 'done' && !task.inbox && task.plan !== 'now')
+      .map(task => ({ id: task.id, position: Number(task.position) || 0 }))
+      .sort((a, b) => a.position - b.position)
+    const beforePosition = changes.beforeId ? siblings.find(task => task.id === changes.beforeId)?.position : undefined
+    const afterPosition = changes.afterId ? siblings.find(task => task.id === changes.afterId)?.position : undefined
+    if (beforePosition !== undefined && afterPosition !== undefined) {
+      nextTarget.position = (beforePosition + afterPosition) / 2
+    } else if (beforePosition !== undefined) {
+      const prev = siblings.filter(task => task.position < beforePosition).pop()
+      nextTarget.position = prev ? (prev.position + beforePosition) / 2 : beforePosition - 1024
+    } else if (afterPosition !== undefined) {
+      const next = siblings.find(task => task.position > afterPosition)
+      nextTarget.position = next ? (afterPosition + next.position) / 2 : afterPosition + 1024
+    } else {
+      const last = siblings[siblings.length - 1]
+      nextTarget.position = last ? last.position + 1024 : 1024
+    }
+  }
 
   return {
     ...board,
@@ -381,9 +578,10 @@ function useRemoteBoard(ctx) {
   }, [])
 
   const update = useCallback(
-    (id, changes) => enqueue(async () => {
+    (id, changes, expectedRevision) => enqueue(async () => {
       await queryClient.cancelQueries({ queryKey })
       const snapshot = boardRef.current
+      const revision = Number.isInteger(expectedRevision) ? expectedRevision : snapshot.revision
       const optimistic = optimisticPatch(snapshot, id, changes)
       boardRef.current = optimistic
       queryClient.setQueryData(queryKey, optimistic)
@@ -391,11 +589,11 @@ function useRemoteBoard(ctx) {
       try {
         const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}?envelope=result`, {
           method: 'PATCH',
-          body: { ...changes, expectedRevision: snapshot.revision, eventSource: 'desktop' },
+          body: { ...changes, expectedRevision: revision, eventSource: 'desktop' },
           timeoutMs: 8000
         })
         commitMutation(remote)
-        return true
+        return { ok: true, revision: Number(remote?.revision) }
       } catch (error) {
         if (boardRef.current === optimistic) {
           boardRef.current = snapshot
@@ -422,6 +620,50 @@ function useRemoteBoard(ctx) {
       return update(task.id, { estimate })
     },
     [update]
+  )
+
+  const reorder = useCallback(
+    (id, target) => enqueue(async () => {
+      await queryClient.cancelQueries({ queryKey })
+      const snapshot = boardRef.current
+      const changes = { category: target.category }
+      if (target.beforeId) changes.beforeId = target.beforeId
+      if (target.afterId) changes.afterId = target.afterId
+      const optimistic = optimisticPatch(snapshot, id, changes)
+      boardRef.current = optimistic
+      queryClient.setQueryData(queryKey, optimistic)
+      setPendingIds(current => new Set(current).add(id))
+      try {
+        const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}/reorder?envelope=result`, {
+          method: 'POST',
+          body: {
+            category: target.category,
+            beforeId: target.beforeId || null,
+            afterId: target.afterId || null,
+            expectedRevision: snapshot.revision,
+            eventSource: 'desktop'
+          },
+          timeoutMs: 8000
+        })
+        commitMutation(remote)
+        return true
+      } catch (error) {
+        if (boardRef.current === optimistic) {
+          boardRef.current = snapshot
+          queryClient.setQueryData(queryKey, snapshot)
+        }
+        host.notifyError(error, 'Could not reorder the shared Todo board')
+        return false
+      } finally {
+        setPendingIds(current => {
+          const next = new Set(current)
+          next.delete(id)
+          return next
+        })
+        invalidateRelated(id)
+      }
+    }),
+    [commitMutation, ctx, enqueue, invalidateRelated, queryClient, queryKey]
   )
 
   const add = useCallback(
@@ -540,19 +782,112 @@ function useRemoteBoard(ctx) {
     [commitMutation, ctx, enqueue, invalidateRelated]
   )
 
+  const addSubtask = useCallback(
+    (id, title) => enqueue(async () => {
+      const snapshot = boardRef.current
+      try {
+        const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}/subtasks?envelope=result`, {
+          method: 'POST',
+          body: { title, expectedRevision: snapshot.revision, eventSource: 'desktop' },
+          timeoutMs: 8000
+        })
+        commitMutation(remote)
+        return true
+      } catch (error) {
+        host.notifyError(error, 'Could not add the subtask')
+        return false
+      } finally {
+        invalidateRelated(id)
+      }
+    }),
+    [commitMutation, ctx, enqueue, invalidateRelated]
+  )
+
+  const updateSubtask = useCallback(
+    (id, subtaskId, changes) => enqueue(async () => {
+      const snapshot = boardRef.current
+      try {
+        const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}/subtasks/${encodeURIComponent(subtaskId)}?envelope=result`, {
+          method: 'PATCH',
+          body: { ...changes, expectedRevision: snapshot.revision, eventSource: 'desktop' },
+          timeoutMs: 8000
+        })
+        commitMutation(remote)
+        return true
+      } catch (error) {
+        host.notifyError(error, 'Could not update the subtask')
+        return false
+      } finally {
+        invalidateRelated(id)
+      }
+    }),
+    [commitMutation, ctx, enqueue, invalidateRelated]
+  )
+
+  const removeSubtask = useCallback(
+    (id, subtaskId) => enqueue(async () => {
+      const snapshot = boardRef.current
+      try {
+        const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}/subtasks/${encodeURIComponent(subtaskId)}?expectedRevision=${snapshot.revision}&envelope=result`, {
+          method: 'DELETE',
+          timeoutMs: 8000
+        })
+        commitMutation(remote)
+        return true
+      } catch (error) {
+        host.notifyError(error, 'Could not delete the subtask')
+        return false
+      } finally {
+        invalidateRelated(id)
+      }
+    }),
+    [commitMutation, ctx, enqueue, invalidateRelated]
+  )
+
+  const reorderSubtask = useCallback(
+    (id, subtaskId, target) => enqueue(async () => {
+      const snapshot = boardRef.current
+      try {
+        const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}/subtasks/${encodeURIComponent(subtaskId)}/reorder?envelope=result`, {
+          method: 'POST',
+          body: {
+            beforeId: target.beforeId || null,
+            afterId: target.afterId || null,
+            expectedRevision: snapshot.revision,
+            eventSource: 'desktop'
+          },
+          timeoutMs: 8000
+        })
+        commitMutation(remote)
+        return true
+      } catch (error) {
+        host.notifyError(error, 'Could not reorder the subtask')
+        return false
+      } finally {
+        invalidateRelated(id)
+      }
+    }),
+    [commitMutation, ctx, enqueue, invalidateRelated]
+  )
+
   return {
     add,
     adding,
+    addSubtask,
     board,
     completeSession,
     connection: query.isError ? 'offline' : query.data ? 'online' : 'connecting',
     cycleEstimate,
+    reorder,
+    reorderSubtask,
     error: query.error ? errorText(query.error) : '',
     linkSession,
     pendingIds,
     refresh: () => query.refetch(),
     remove,
-    update
+    removeSubtask,
+    update,
+    updateSubtask
   }
 }
 
@@ -584,6 +919,17 @@ function EstimateButton({ disabled, minutes, onClick }) {
     variant: 'text',
     children: `${minutes}m`
   })
+}
+
+function deadlineDateKey(task) {
+  if (task.dueDate) return task.dueDate
+  if (!task.dueAt) return null
+  const dueText = String(task.dueAt)
+  const taskTimeZone = safeTimeZone(task.dueTimezone)
+  const naiveInTaskZone = !/(?:Z|[+-]\d{2}:\d{2})$/i.test(dueText) && Boolean(taskTimeZone)
+  const due = naiveInTaskZone ? zonedDateTimeToDate(dueText, taskTimeZone) : new Date(dueText)
+  if (Number.isNaN(due.getTime())) return null
+  return localDateKey(due)
 }
 
 function dueLabel(task) {
@@ -628,6 +974,15 @@ function ChoiceButton({ active, children, disabled, onClick }) {
     type: 'button',
     variant: active ? 'default' : 'secondary',
     children
+  })
+}
+
+const DIM_FIELD_BORDER = 'color-mix(in srgb, var(--ui-text-primary) 22%, transparent)'
+
+function DimInput(props) {
+  return jsx(Input, {
+    ...props,
+    style: { borderColor: DIM_FIELD_BORDER, ...(props.style || {}) }
   })
 }
 
@@ -741,7 +1096,149 @@ function changedTaskDetails(initial, current) {
   return changes
 }
 
-function TaskDetails({ ctx, task, disabled, update, remove, close, completeSession }) {
+function SubtaskEditor({ task, disabled, addSubtask, updateSubtask, removeSubtask, reorderSubtask }) {
+  const [draft, setDraft] = useState('')
+  const items = task.subtasks || []
+  const dragCleanupRef = useRef(null)
+  useEffect(() => () => { dragCleanupRef.current?.() }, [task.id])
+
+  const addItem = async () => {
+    const title = draft.trim()
+    if (!title) return
+    const saved = await addSubtask(task.id, title)
+    if (saved) setDraft('')
+  }
+
+  const startReorder = (item, event) => {
+    if (event.button !== 0 || disabled) return
+    event.preventDefault()
+    event.stopPropagation()
+    dragCleanupRef.current?.()
+    const pointerId = event.pointerId
+    const startY = event.clientY
+    let moved = false
+    const onMove = moveEvent => {
+      if (moveEvent.pointerId !== pointerId) return
+      if (Math.abs(moveEvent.clientY - startY) >= SUBTASK_DRAG_THRESHOLD_PX) moved = true
+    }
+    const onUp = upEvent => {
+      if (upEvent.pointerId !== pointerId) return
+      cleanup()
+      if (!moved) return
+      const row = document.elementFromPoint(upEvent.clientX, upEvent.clientY)?.closest('[data-subtask-id]')
+      const targetId = row?.getAttribute('data-subtask-id')
+      if (!targetId || targetId === item.id) return
+      const targetIndex = items.findIndex(entry => entry.id === targetId)
+      if (targetIndex < 0) return
+      const beforeId = items[targetIndex].id
+      if (upEvent.clientY < (row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2)) {
+        void reorderSubtask(task.id, item.id, { beforeId })
+      } else {
+        void reorderSubtask(task.id, item.id, { afterId: beforeId })
+      }
+    }
+    const onCancel = cancelEvent => {
+      if (cancelEvent.pointerId === undefined || cancelEvent.pointerId === pointerId) cleanup()
+    }
+    const onKey = keyEvent => { if (keyEvent.key === 'Escape') cleanup() }
+    const cleanup = () => {
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onUp, true)
+      window.removeEventListener('pointercancel', onCancel, true)
+      window.removeEventListener('blur', onCancel, true)
+      window.removeEventListener('keydown', onKey, true)
+      dragCleanupRef.current = null
+    }
+    window.addEventListener('pointermove', onMove, true)
+    window.addEventListener('pointerup', onUp, true)
+    window.addEventListener('pointercancel', onCancel, true)
+    window.addEventListener('blur', onCancel, true)
+    window.addEventListener('keydown', onKey, true)
+    dragCleanupRef.current = cleanup
+  }
+
+  return jsxs('div', {
+    className: 'mt-1',
+    children: [
+      items.map((item, index) => jsxs('div', {
+        'data-subtask-id': item.id,
+        className: 'mb-1 flex items-center gap-1',
+        children: [
+          jsx('button', {
+            'aria-label': 'Reorder subtask',
+            className: 'shrink-0 cursor-grab px-0.5 text-[0.6875rem] text-(--ui-text-quaternary)',
+            disabled,
+            onPointerDown: event => startReorder(item, event),
+            type: 'button',
+            children: '::'
+          }),
+          jsx(IconButton, { disabled: disabled || index === 0, icon: icons.ArrowUp, label: `Move subtask ${item.title} earlier`, onClick: () => void reorderSubtask(task.id, item.id, { beforeId: items[index - 1].id }) }),
+          jsx(IconButton, { disabled: disabled || index === items.length - 1, icon: icons.ArrowDown, label: `Move subtask ${item.title} later`, onClick: () => void reorderSubtask(task.id, item.id, { afterId: items[index + 1].id }) }),
+          jsx('input', {
+            'aria-label': item.done ? 'Mark subtask incomplete' : 'Mark subtask complete',
+            checked: item.done,
+            disabled,
+            onChange: event => void updateSubtask(task.id, item.id, { done: event.target.checked }),
+            type: 'checkbox'
+          }),
+          jsx(DimInput, {
+            'aria-label': 'Subtask title',
+            className: 'h-7 min-w-0 flex-1 text-xs',
+            disabled,
+            maxLength: 500,
+            onBlur: event => {
+              const title = event.target.value.trim()
+              if (title && title !== item.title) void updateSubtask(task.id, item.id, { title })
+            },
+            onKeyDown: event => {
+              if (event.key === 'Enter') event.currentTarget.blur()
+            },
+            defaultValue: item.title
+          }),
+          jsx(Button, {
+            'aria-label': 'Delete subtask',
+            disabled,
+            onClick: () => void removeSubtask(task.id, item.id),
+            size: 'icon-xs',
+            type: 'button',
+            variant: 'ghost',
+            children: jsx(icons.X, { className: 'size-3.5' })
+          })
+        ]
+      }, item.id)),
+      jsxs('div', {
+        className: 'mt-1 flex items-center gap-1',
+        children: [
+          jsx(DimInput, {
+            'aria-label': 'New subtask',
+            className: 'h-7 min-w-0 flex-1 text-xs',
+            disabled,
+            maxLength: 500,
+            onChange: event => setDraft(event.target.value),
+            onKeyDown: event => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                void addItem()
+              }
+            },
+            placeholder: 'Add a subtask',
+            value: draft
+          }),
+          jsx(Button, {
+            disabled: disabled || !draft.trim(),
+            onClick: () => void addItem(),
+            size: 'xs',
+            type: 'button',
+            variant: 'secondary',
+            children: 'Add'
+          })
+        ]
+      })
+    ]
+  })
+}
+
+function TaskDetails({ ctx, task, disabled, update, remove, close, closeRequestRef, completeSession, addSubtask, updateSubtask, removeSubtask, reorderSubtask, boardRevision }) {
   const activeProfile = useValue(host.state.profile)
   const initialDraftRef = useRef(null)
   if (initialDraftRef.current === null) {
@@ -749,6 +1246,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
     initialDraftRef.current = makeTaskDetailsDraft(task, localTimeZone)
   }
   const initialDraft = initialDraftRef.current
+  const [detailTab, setDetailTab] = useState('work')
   const [titleDraft, setTitleDraft] = useState(initialDraft.title)
   const [projectDraft, setProjectDraft] = useState(initialDraft.project)
   const [recurrenceDraft, setRecurrenceDraft] = useState(initialDraft.recurrence)
@@ -777,215 +1275,350 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
     retry: 1
   })
 
+  const currentDraft = {
+    approvalState: approvalStateDraft,
+    artefacts: lines(artefactsDraft),
+    blocker: blockerDraft,
+    brief: briefDraft,
+    closureCondition: closureConditionDraft,
+    closureEvidence: lines(closureEvidenceDraft),
+    closureNote: closureNoteDraft,
+    dueAt: timedDraft,
+    dueDate: dueDraft,
+    dueMode,
+    dueTimezone: initialDraft.dueTimezone,
+    executionMode: executionModeDraft,
+    nextAction: nextActionDraft,
+    owner: ownerDraft,
+    priority: priorityDraft,
+    project: projectDraft,
+    recurrence: recurrenceDraft,
+    recurrenceRule: recurrenceRuleDraft,
+    recurrenceTimezone: recurrenceTimezoneDraft,
+    reviewDate: reviewDateDraft,
+    title: titleDraft,
+    waitingOn: waitingOnDraft
+  }
+  const currentDraftRef = useRef(currentDraft)
+  currentDraftRef.current = currentDraft
+
+  const deletedRef = useRef(false)
+  const savingRef = useRef(null)
+  const openedRevisionRef = useRef(boardRevision)
+
+  const flushSave = useCallback(async () => {
+    if (deletedRef.current) return true
+    if (savingRef.current) return savingRef.current
+    const snapshot = currentDraftRef.current
+    const title = snapshot.title.trim()
+    if (!title) return false
+    const changes = changedTaskDetails(initialDraftRef.current, snapshot)
+    if (Object.keys(changes).length === 0) return true
+    const run = (async () => {
+      let pendingSnapshot = snapshot
+      let pendingChanges = changes
+      while (!deletedRef.current) {
+        const saved = await update(task.id, pendingChanges, openedRevisionRef.current)
+        if (!saved) return false
+        // Use this write's revision, never a newer polled board revision.
+        if (Number.isInteger(saved.revision)) openedRevisionRef.current = saved.revision
+        initialDraftRef.current = { ...pendingSnapshot, title: pendingSnapshot.title.trim() }
+        if (deletedRef.current) return true
+        pendingSnapshot = currentDraftRef.current
+        if (!pendingSnapshot.title.trim()) return false
+        pendingChanges = changedTaskDetails(initialDraftRef.current, pendingSnapshot)
+        if (Object.keys(pendingChanges).length === 0) return true
+      }
+      return true
+    })()
+    savingRef.current = run
+    try {
+      return await run
+    } finally {
+      if (savingRef.current === run) savingRef.current = null
+    }
+  }, [task.id, update])
+
+  useEffect(() => {
+    if (disabled) return undefined
+    const title = currentDraft.title.trim()
+    if (!title) return undefined
+    const changes = changedTaskDetails(initialDraftRef.current, currentDraft)
+    if (Object.keys(changes).length === 0) return undefined
+    const timer = setTimeout(() => { void flushSave() }, AUTOSAVE_MS)
+    return () => clearTimeout(timer)
+  })
+
+  useEffect(() => () => { if (!deletedRef.current) void flushSave() }, [flushSave])
+
+  const closeEditor = useCallback(async () => {
+    if (await flushSave()) close()
+  }, [flushSave, close])
+  useEffect(() => {
+    if (!closeRequestRef) return undefined
+    closeRequestRef.current = closeEditor
+    return () => { closeRequestRef.current = null }
+  }, [closeEditor, closeRequestRef])
+
   const saveDetails = async event => {
     event.preventDefault()
-    const title = titleDraft.trim()
-    if (!title) return
-    const currentDraft = {
-      approvalState: approvalStateDraft,
-      artefacts: lines(artefactsDraft),
-      blocker: blockerDraft,
-      brief: briefDraft,
-      closureCondition: closureConditionDraft,
-      closureEvidence: lines(closureEvidenceDraft),
-      closureNote: closureNoteDraft,
-      dueAt: timedDraft,
-      dueDate: dueDraft,
-      dueMode,
-      dueTimezone: initialDraft.dueTimezone,
-      executionMode: executionModeDraft,
-      nextAction: nextActionDraft,
-      owner: ownerDraft,
-      priority: priorityDraft,
-      project: projectDraft,
-      recurrence: recurrenceDraft,
-      recurrenceRule: recurrenceRuleDraft,
-      recurrenceTimezone: recurrenceTimezoneDraft,
-      reviewDate: reviewDateDraft,
-      title,
-      waitingOn: waitingOnDraft
-    }
-    const changes = changedTaskDetails(initialDraft, currentDraft)
-    if (Object.keys(changes).length === 0) {
-      close()
-      return
-    }
-    const saved = await update(task.id, changes)
-    if (saved) close()
+    await flushSave()
   }
+
+  const workFields = [
+    jsx(FieldLabel, { children: 'Task title' }, 'title-label'),
+    jsx(DimInput, {
+      'aria-label': 'Task title',
+      className: 'h-7 text-xs',
+      disabled,
+      maxLength: 500,
+      onChange: event => setTitleDraft(event.target.value),
+      value: titleDraft
+    }, 'title'),
+    jsx(TextAreaField, { disabled, label: 'Brief and decisions', maxLength: 8000, onChange: event => setBriefDraft(event.target.value), placeholder: 'Durable context for re-entry', value: briefDraft }, 'brief'),
+    jsx(TextAreaField, { disabled, label: 'Next action', maxLength: 2000, onChange: event => setNextActionDraft(event.target.value), placeholder: 'The smallest live move', value: nextActionDraft }, 'next'),
+    jsx(TextAreaField, { disabled, label: 'Closure condition', maxLength: 4000, onChange: event => setClosureConditionDraft(event.target.value), placeholder: 'What proves this is complete?', value: closureConditionDraft }, 'closure'),
+    jsx(TextAreaField, { disabled, label: 'Artefacts', maxLength: 20000, onChange: event => setArtefactsDraft(event.target.value), placeholder: 'One safe link or path per line', value: artefactsDraft }, 'artefacts')
+  ]
+
+  const planFields = [
+    jsx(FieldLabel, { children: 'Plan' }, 'plan-label'),
+    jsxs('div', {
+      className: 'flex flex-wrap gap-1',
+      children: [
+        jsx(ChoiceButton, { active: task.status === 'open' && task.plan === 'now', disabled, onClick: () => void update(task.id, { plan: 'now', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }), children: 'Now' }),
+        jsx(ChoiceButton, { active: task.status === 'open' && task.plan === 'today', disabled, onClick: () => void update(task.id, { plan: 'today', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }), children: 'Today' }),
+        jsx(ChoiceButton, { active: task.status === 'open' && task.plan === 'later', disabled, onClick: () => void update(task.id, { plan: 'later', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }), children: 'Later' })
+      ]
+    }, 'plan'),
+    jsx(FieldLabel, { children: 'Category' }, 'cat-label'),
+    jsxs('div', {
+      className: 'flex flex-wrap gap-1',
+      children: CATEGORIES.map(categoryId => jsx(ChoiceButton, {
+        active: task.category === categoryId,
+        disabled,
+        onClick: () => void update(task.id, { category: categoryId }),
+        children: CATEGORY_LABELS[categoryId]
+      }, categoryId))
+    }, 'cat'),
+    jsx(FieldLabel, { children: 'Status' }, 'status-label'),
+    jsxs('div', {
+      className: 'flex flex-wrap gap-1',
+      children: [
+        jsx(ChoiceButton, { active: task.status === 'open', disabled, onClick: () => void update(task.id, { status: 'open', waitingOn: null, reviewDate: null, blocker: null }), children: 'Open' }),
+        jsx(ChoiceButton, { active: task.status === 'waiting', disabled, onClick: () => void update(task.id, { status: 'waiting', blocker: null }), children: 'Waiting' }),
+        jsx(ChoiceButton, { active: task.status === 'blocked', disabled, onClick: () => void update(task.id, { status: 'blocked', waitingOn: null, reviewDate: null }), children: 'Blocked' })
+      ]
+    }, 'status'),
+    jsx(FieldLabel, { children: 'Deadline' }, 'due-label'),
+    jsxs('div', {
+      className: 'mb-1 flex items-center gap-1',
+      children: [
+        jsx(ChoiceButton, {
+          active: dueMode === 'date',
+          disabled,
+          onClick: () => {
+            if (dueMode === 'date') return
+            setDueMode('date')
+            const carried = (timedDraft || '').slice(0, 10)
+            if (/^\d{4}-\d{2}-\d{2}$/.test(carried)) setDueDraft(carried)
+          },
+          children: 'All day'
+        }),
+        jsx(ChoiceButton, {
+          active: dueMode === 'timed',
+          disabled,
+          onClick: () => {
+            if (dueMode === 'timed') return
+            setDueMode('timed')
+            if (!timedDraft && /^\d{4}-\d{2}-\d{2}$/.test(dueDraft || '')) setTimedDraft(`${dueDraft}T12:00`)
+          },
+          children: 'Timed'
+        }),
+        dueMode === 'timed'
+          ? jsx(DimInput, {
+              'aria-label': 'Timed deadline',
+              className: 'h-7 min-w-0 flex-1 text-xs',
+              disabled,
+              onChange: event => setTimedDraft(event.target.value),
+              type: 'datetime-local',
+              value: timedDraft
+            }, 'timed')
+          : jsx(DimInput, {
+              'aria-label': 'Due date',
+              className: 'h-7 min-w-0 flex-1 text-xs',
+              disabled,
+              onChange: event => setDueDraft(event.target.value),
+              type: 'date',
+              value: dueDraft
+            }, 'date')
+      ]
+    }, 'due-row'),
+    jsx(FieldLabel, { children: 'Priority' }, 'pri-label'),
+    jsx('div', {
+      className: 'flex flex-wrap gap-1',
+      children: [null, 1, 2, 3, 4].map(value => jsx(ChoiceButton, {
+        active: priorityDraft === value,
+        disabled,
+        onClick: () => setPriorityDraft(value),
+        children: value === null ? 'None' : `P${value}`
+      }, String(value)))
+    }, 'pri'),
+    jsx(FieldLabel, { children: 'Project' }, 'proj-label'),
+    jsx(DimInput, {
+      'aria-label': 'Project',
+      className: 'h-7 text-xs',
+      disabled,
+      maxLength: 500,
+      onChange: event => setProjectDraft(event.target.value),
+      placeholder: 'Optional',
+      value: projectDraft
+    }, 'proj')
+  ]
+
+  const waitFields = [
+    jsx(FieldLabel, { children: 'Waiting and blocking' }, 'wait-label'),
+    jsxs('div', {
+      className: 'grid grid-cols-2 gap-1.5',
+      children: [
+        jsx(DimInput, { 'aria-label': 'Waiting on', className: 'h-7 text-xs', disabled, maxLength: 1000, onChange: event => setWaitingOnDraft(event.target.value), placeholder: 'Waiting on', value: waitingOnDraft }),
+        jsx(DimInput, { 'aria-label': 'Review date', className: 'h-7 text-xs', disabled, onChange: event => setReviewDateDraft(event.target.value), type: 'date', value: reviewDateDraft })
+      ]
+    }, 'wait-row'),
+    jsx(TextAreaField, { disabled, label: 'Blocker', maxLength: 2000, onChange: event => setBlockerDraft(event.target.value), placeholder: 'What prevents progress?', value: blockerDraft }, 'blocker'),
+    jsx(FieldLabel, { children: 'Owner and execution' }, 'owner-label'),
+    jsx(DimInput, { 'aria-label': 'Owner', className: 'h-7 text-xs', disabled, maxLength: 200, onChange: event => setOwnerDraft(event.target.value), placeholder: 'Owner or assignee', value: ownerDraft }, 'owner'),
+    jsx('div', {
+      className: 'mt-1 flex flex-wrap gap-1',
+      children: ['manual', 'supervised', 'autonomous'].map(value => jsx(ChoiceButton, { active: executionModeDraft === value, disabled, onClick: () => setExecutionModeDraft(value), children: value }, value))
+    }, 'exec'),
+    jsx('div', {
+      className: 'mt-1 flex flex-wrap gap-1',
+      children: ['not-required', 'pending', 'approved', 'rejected'].map(value => jsx(ChoiceButton, { active: approvalStateDraft === value, disabled, onClick: () => setApprovalStateDraft(value), children: value }, value))
+    }, 'approval')
+  ]
+
+  const moreFields = [
+    jsx(FieldLabel, { children: 'Recurrence note' }, 'rec-label'),
+    jsx(DimInput, {
+      'aria-label': 'Recurrence note',
+      className: 'h-7 text-xs',
+      disabled,
+      maxLength: 500,
+      onChange: event => setRecurrenceDraft(event.target.value),
+      placeholder: 'Optional',
+      value: recurrenceDraft
+    }, 'rec'),
+    jsx(FieldLabel, { children: 'Executable recurrence' }, 'rule-label'),
+    jsxs('div', {
+      className: 'grid grid-cols-2 gap-1.5',
+      children: [
+        jsx(DimInput, { 'aria-label': 'Recurrence rule', className: 'h-7 text-xs', disabled, maxLength: 50, onChange: event => setRecurrenceRuleDraft(event.target.value), placeholder: 'daily, weekdays, weekly…', value: recurrenceRuleDraft }),
+        jsx(DimInput, { 'aria-label': 'Recurrence timezone', className: 'h-7 text-xs', disabled, maxLength: 100, onChange: event => setRecurrenceTimezoneDraft(event.target.value), placeholder: 'Europe/Amsterdam', value: recurrenceTimezoneDraft })
+      ]
+    }, 'rule'),
+    task.seriesId && jsx('div', { className: 'mt-1 break-all text-[0.625rem] text-(--ui-text-quaternary)', children: `Series ${task.seriesId} · occurrence ${task.occurrenceNumber}` }, 'series'),
+    jsx(TextAreaField, { disabled, label: 'Closure note', maxLength: 4000, onChange: event => setClosureNoteDraft(event.target.value), placeholder: 'What was delivered?', value: closureNoteDraft }, 'cnote'),
+    jsx(TextAreaField, { disabled, label: 'Closure evidence', maxLength: 20000, onChange: event => setClosureEvidenceDraft(event.target.value), placeholder: 'One verification path or link per line', value: closureEvidenceDraft }, 'cevid'),
+    task.sessionId && jsxs('div', {
+      className: 'mt-2 rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
+      children: [
+        jsx('div', { className: 'break-all', children: `Hermes session ${task.sessionState || 'linked'} · ${task.sessionId}` }),
+        task.sessionState === 'active' && jsxs('div', {
+          className: 'mt-1.5 flex items-center justify-between gap-2',
+          children: [
+            jsx('span', { className: 'leading-4 text-(--ui-text-quaternary)', children: 'Close a stale active link before starting a replacement.' }),
+            jsx(Button, {
+              disabled,
+              onClick: () => void completeSession(task.id),
+              size: 'micro',
+              type: 'button',
+              variant: 'text',
+              children: 'Close linked session'
+            })
+          ]
+        })
+      ]
+    }, 'session'),
+    jsxs('details', {
+      className: 'mt-3',
+      children: [
+        jsxs('summary', {
+          className: 'cursor-pointer text-[0.6875rem] font-medium text-(--ui-text-tertiary)',
+          children: ['History', historyQuery.data?.events?.length ? ` · ${historyQuery.data.events.length}` : '']
+        }),
+        historyQuery.isLoading
+          ? jsx('div', { className: 'py-2 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'Loading history…' })
+          : historyQuery.isError
+            ? jsx('div', { className: 'py-2 text-[0.6875rem] text-(--ui-text-tertiary)', children: `History unavailable: ${errorText(historyQuery.error)}` })
+            : historyQuery.data?.events?.length
+              ? jsx('ol', {
+                  className: 'mt-1 border-l border-(--ui-stroke-secondary) pl-2',
+                  children: historyQuery.data.events.map(event => jsxs('li', {
+                    className: 'py-1 text-[0.625rem] leading-4 text-(--ui-text-quaternary)',
+                    children: [
+                      jsx('div', { className: 'font-medium text-(--ui-text-tertiary)', children: event.type.replaceAll('.', ' ') }),
+                      jsx('div', { children: [event.source, event.actor, new Date(event.createdAt).toLocaleString()].filter(Boolean).join(' · ') })
+                    ]
+                  }, event.id))
+                })
+              : jsx('div', { className: 'py-2 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'No history recorded yet.' })
+      ]
+    }, 'history')
+  ]
+
+  const subsFields = [
+    jsx(SubtaskEditor, {
+      addSubtask,
+      disabled,
+      removeSubtask,
+      reorderSubtask,
+      task,
+      updateSubtask
+    }, 'subs')
+  ]
+
+  const tabFields = detailTab === 'plan'
+    ? planFields
+    : detailTab === 'wait'
+      ? waitFields
+      : detailTab === 'subs'
+        ? subsFields
+        : detailTab === 'more'
+          ? moreFields
+          : workFields
 
   return jsxs('form', {
     className: 'mt-2 rounded-md border border-(--ui-stroke-secondary) p-2',
     onSubmit: event => void saveDetails(event),
     onKeyDown: event => {
-      if (event.key === 'Escape') close()
+      if (event.key === 'Escape') void closeEditor()
     },
     children: [
-      jsx(FieldLabel, { children: 'Task title' }),
-      jsx(Input, {
-        'aria-label': 'Task title',
-        className: 'h-7 text-xs',
-        disabled,
-        maxLength: 500,
-        onChange: event => setTitleDraft(event.target.value),
-        value: titleDraft
-      }),
-      jsx(FieldLabel, { children: 'Plan' }),
       jsxs('div', {
-        className: 'flex flex-wrap gap-1',
+        className: 'flex items-center justify-between gap-1',
         children: [
-          jsx(ChoiceButton, { active: task.status === 'open' && task.plan === 'now', disabled, onClick: () => void update(task.id, { plan: 'now', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }), children: 'Now' }),
-          jsx(ChoiceButton, { active: task.status === 'open' && task.plan === 'today', disabled, onClick: () => void update(task.id, { plan: 'today', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }), children: 'Today' }),
-          jsx(ChoiceButton, { active: task.status === 'open' && task.plan === 'later', disabled, onClick: () => void update(task.id, { plan: 'later', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }), children: 'Later' })
-        ]
-      }),
-      jsx(FieldLabel, { children: 'Status' }),
-      jsxs('div', {
-        className: 'flex flex-wrap gap-1',
-        children: [
-          jsx(ChoiceButton, { active: task.status === 'open', disabled, onClick: () => void update(task.id, { status: 'open', waitingOn: null, reviewDate: null, blocker: null }), children: 'Open' }),
-          jsx(ChoiceButton, { active: task.status === 'waiting', disabled, onClick: () => void update(task.id, { status: 'waiting', blocker: null }), children: 'Waiting' }),
-          jsx(ChoiceButton, { active: task.status === 'blocked', disabled, onClick: () => void update(task.id, { status: 'blocked', waitingOn: null, reviewDate: null }), children: 'Blocked' })
-        ]
-      }),
-      jsx(FieldLabel, { children: 'Deadline' }),
-      jsxs('div', {
-        className: 'mb-1 flex gap-1',
-        children: [
-          jsx(ChoiceButton, { active: dueMode === 'date', disabled, onClick: () => setDueMode('date'), children: 'All day' }),
-          jsx(ChoiceButton, { active: dueMode === 'timed', disabled, onClick: () => setDueMode('timed'), children: 'Timed' })
-        ]
-      }),
-      dueMode === 'timed'
-        ? jsx(Input, {
-            'aria-label': 'Timed deadline',
-            className: 'h-7 text-xs',
+          jsx(SegmentedControl, {
             disabled,
-            onChange: event => setTimedDraft(event.target.value),
-            type: 'datetime-local',
-            value: timedDraft
-          })
-        : jsx(Input, {
-            'aria-label': 'Due date',
-            className: 'h-7 text-xs',
-            disabled,
-            onChange: event => setDueDraft(event.target.value),
-            type: 'date',
-            value: dueDraft
+            onChange: setDetailTab,
+            options: DETAIL_TABS,
+            value: detailTab
           }),
-      jsx(TextAreaField, { disabled, label: 'Brief and decisions', maxLength: 8000, onChange: event => setBriefDraft(event.target.value), placeholder: 'Durable context for re-entry', value: briefDraft }),
-      jsx(TextAreaField, { disabled, label: 'Next action', maxLength: 2000, onChange: event => setNextActionDraft(event.target.value), placeholder: 'The smallest live move', value: nextActionDraft }),
-      jsx(TextAreaField, { disabled, label: 'Closure condition', maxLength: 4000, onChange: event => setClosureConditionDraft(event.target.value), placeholder: 'What proves this is complete?', value: closureConditionDraft }),
-      jsx(FieldLabel, { children: 'Waiting and blocking' }),
-      jsxs('div', {
-        className: 'grid grid-cols-2 gap-1.5',
-        children: [
-          jsx(Input, { 'aria-label': 'Waiting on', className: 'h-7 text-xs', disabled, maxLength: 1000, onChange: event => setWaitingOnDraft(event.target.value), placeholder: 'Waiting on', value: waitingOnDraft }),
-          jsx(Input, { 'aria-label': 'Review date', className: 'h-7 text-xs', disabled, onChange: event => setReviewDateDraft(event.target.value), type: 'date', value: reviewDateDraft })
-        ]
-      }),
-      jsx(TextAreaField, { disabled, label: 'Blocker', maxLength: 2000, onChange: event => setBlockerDraft(event.target.value), placeholder: 'What prevents progress?', value: blockerDraft }),
-      jsx(FieldLabel, { children: 'Project' }),
-      jsx(Input, {
-        'aria-label': 'Project',
-        className: 'h-7 text-xs',
-        disabled,
-        maxLength: 500,
-        onChange: event => setProjectDraft(event.target.value),
-        placeholder: 'Optional',
-        value: projectDraft
-      }),
-      jsx(FieldLabel, { children: 'Priority' }),
-      jsx('div', {
-        className: 'flex flex-wrap gap-1',
-        children: [null, 1, 2, 3, 4].map(value => jsx(ChoiceButton, {
-          active: priorityDraft === value,
-          disabled,
-          onClick: () => setPriorityDraft(value),
-          children: value === null ? 'None' : `P${value}`
-        }, String(value)))
-      }),
-      jsx(FieldLabel, { children: 'Owner and execution' }),
-      jsx(Input, { 'aria-label': 'Owner', className: 'h-7 text-xs', disabled, maxLength: 200, onChange: event => setOwnerDraft(event.target.value), placeholder: 'Owner or assignee', value: ownerDraft }),
-      jsx('div', {
-        className: 'mt-1 flex flex-wrap gap-1',
-        children: ['manual', 'supervised', 'autonomous'].map(value => jsx(ChoiceButton, { active: executionModeDraft === value, disabled, onClick: () => setExecutionModeDraft(value), children: value }, value))
-      }),
-      jsx('div', {
-        className: 'mt-1 flex flex-wrap gap-1',
-        children: ['not-required', 'pending', 'approved', 'rejected'].map(value => jsx(ChoiceButton, { active: approvalStateDraft === value, disabled, onClick: () => setApprovalStateDraft(value), children: value }, value))
-      }),
-      jsx(TextAreaField, { disabled, label: 'Artefacts', maxLength: 20000, onChange: event => setArtefactsDraft(event.target.value), placeholder: 'One safe link or path per line', value: artefactsDraft }),
-      jsx(FieldLabel, { children: 'Recurrence note' }),
-      jsx(Input, {
-        'aria-label': 'Recurrence note',
-        className: 'h-7 text-xs',
-        disabled,
-        maxLength: 500,
-        onChange: event => setRecurrenceDraft(event.target.value),
-        placeholder: 'Optional',
-        value: recurrenceDraft
-      }),
-      jsx(FieldLabel, { children: 'Executable recurrence' }),
-      jsxs('div', {
-        className: 'grid grid-cols-2 gap-1.5',
-        children: [
-          jsx(Input, { 'aria-label': 'Recurrence rule', className: 'h-7 text-xs', disabled, maxLength: 50, onChange: event => setRecurrenceRuleDraft(event.target.value), placeholder: 'daily, weekdays, weekly…', value: recurrenceRuleDraft }),
-          jsx(Input, { 'aria-label': 'Recurrence timezone', className: 'h-7 text-xs', disabled, maxLength: 100, onChange: event => setRecurrenceTimezoneDraft(event.target.value), placeholder: 'Europe/Amsterdam', value: recurrenceTimezoneDraft })
-        ]
-      }),
-      task.seriesId && jsx('div', { className: 'mt-1 break-all text-[0.625rem] text-(--ui-text-quaternary)', children: `Series ${task.seriesId} · occurrence ${task.occurrenceNumber}` }),
-      jsx(TextAreaField, { disabled, label: 'Closure note', maxLength: 4000, onChange: event => setClosureNoteDraft(event.target.value), placeholder: 'What was delivered?', value: closureNoteDraft }),
-      jsx(TextAreaField, { disabled, label: 'Closure evidence', maxLength: 20000, onChange: event => setClosureEvidenceDraft(event.target.value), placeholder: 'One verification path or link per line', value: closureEvidenceDraft }),
-      task.sessionId && jsxs('div', {
-        className: 'mt-2 rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
-        children: [
-          jsx('div', { className: 'break-all', children: `Hermes session ${task.sessionState || 'linked'} · ${task.sessionId}` }),
-          task.sessionState === 'active' && jsxs('div', {
-            className: 'mt-1.5 flex items-center justify-between gap-2',
-            children: [
-              jsx('span', { className: 'leading-4 text-(--ui-text-quaternary)', children: 'Close a stale active link before starting a replacement.' }),
-              jsx(Button, {
-                disabled,
-                onClick: () => void completeSession(task.id),
-                size: 'micro',
-                type: 'button',
-                variant: 'text',
-                children: 'Close linked session'
-              })
-            ]
+          jsx(Button, {
+            'aria-label': 'Save',
+            disabled: disabled || !titleDraft.trim(),
+            onClick: () => void flushSave(),
+            size: 'icon-xs',
+            type: 'button',
+            variant: 'ghost',
+            children: jsx(icons.Save, { className: 'size-3.5' })
           })
         ]
       }),
-      jsxs('details', {
-        className: 'mt-3',
-        children: [
-          jsxs('summary', {
-            className: 'cursor-pointer text-[0.6875rem] font-medium text-(--ui-text-tertiary)',
-            children: ['History', historyQuery.data?.events?.length ? ` · ${historyQuery.data.events.length}` : '']
-          }),
-          historyQuery.isLoading
-            ? jsx('div', { className: 'py-2 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'Loading history…' })
-            : historyQuery.isError
-              ? jsx('div', { className: 'py-2 text-[0.6875rem] text-(--ui-text-tertiary)', children: `History unavailable: ${errorText(historyQuery.error)}` })
-              : historyQuery.data?.events?.length
-                ? jsx('ol', {
-                    className: 'mt-1 border-l border-(--ui-stroke-secondary) pl-2',
-                    children: historyQuery.data.events.map(event => jsxs('li', {
-                      className: 'py-1 text-[0.625rem] leading-4 text-(--ui-text-quaternary)',
-                      children: [
-                        jsx('div', { className: 'font-medium text-(--ui-text-tertiary)', children: event.type.replaceAll('.', ' ') }),
-                        jsx('div', { children: [event.source, event.actor, new Date(event.createdAt).toLocaleString()].filter(Boolean).join(' · ') })
-                      ]
-                    }, event.id))
-                  })
-                : jsx('div', { className: 'py-2 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'No history recorded yet.' })
-        ]
-      }),
-      jsx('div', {
+      ...tabFields,
+      jsxs('div', {
         className: 'mt-2 flex items-center gap-1',
         children: [
-          jsx(Button, { disabled: disabled || !titleDraft.trim(), size: 'xs', type: 'submit', variant: 'secondary', children: 'Save details' }),
           jsx(Button, {
             disabled,
             onClick: async () => {
@@ -993,111 +1626,364 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
                 setConfirmDelete(true)
                 return
               }
-              if (await remove(task.id)) close()
+              // Block the autosave timer and unmount flush before the first await,
+              // otherwise a dirty draft is PATCHed for a task being deleted.
+              deletedRef.current = true
+              if (savingRef.current) await savingRef.current.catch(() => false)
+              if (await remove(task.id)) {
+                close()
+                return
+              }
+              deletedRef.current = false
             },
             size: 'xs',
             type: 'button',
             variant: 'text',
             children: confirmDelete ? 'Confirm delete' : 'Delete'
           }),
-          jsx(Button, { disabled, onClick: close, size: 'xs', type: 'button', variant: 'text', children: 'Cancel' })
+          jsx(Button, { disabled, onClick: () => void closeEditor(), size: 'xs', type: 'button', variant: 'text', children: 'Cancel' })
         ]
       })
     ]
   })
 }
 
-function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pending, workingId, workWithHermes, prominent = false, reason }) {
+const PRIORITY_PILL = {
+  1: { label: 'P1', background: 'color-mix(in srgb, #ef4444 22%, transparent)', color: '#f87171', border: '#ef4444' },
+  2: { label: 'P2', background: 'color-mix(in srgb, #f59e0b 22%, transparent)', color: '#fbbf24', border: '#f59e0b' },
+  3: { label: 'P3', background: 'color-mix(in srgb, #3b82f6 22%, transparent)', color: '#60a5fa', border: '#3b82f6' },
+  4: { label: 'P4', background: 'color-mix(in srgb, #64748b 22%, transparent)', color: '#94a3b8', border: '#64748b' }
+}
+
+function PriorityPill({ priority }) {
+  const style = PRIORITY_PILL[priority]
+  if (!style) return null
+  return jsx('span', {
+    className: 'mr-1.5 inline-flex shrink-0 items-center rounded-full border px-1.5 text-[0.5625rem] font-semibold uppercase leading-[14px]',
+    style: {
+      background: style.background,
+      color: style.color,
+      borderColor: 'color-mix(in srgb, ' + style.border + ' 45%, transparent)'
+    },
+    children: style.label
+  })
+}
+
+function TaskRow({ ctx, task, update, reorder, categoryTasks = [], remove, completeSession, cycleEstimate, pending, workingId, workWithHermes, addSubtask, updateSubtask, removeSubtask, reorderSubtask, prominent = false, reason, boardRevision }) {
   const [editing, setEditing] = useState(false)
+  const [subtasksOpen, setSubtasksOpen] = useState(false)
+  const [confirmComplete, setConfirmComplete] = useState(false)
+  const confirmTimerRef = useRef(null)
+  const closeRequestRef = useRef(null)
   const disabled = pending || workingId === task.id
+
+  const clearConfirmComplete = useCallback(() => {
+    if (confirmTimerRef.current) {
+      clearTimeout(confirmTimerRef.current)
+      confirmTimerRef.current = null
+    }
+    setConfirmComplete(false)
+  }, [])
+
+  useEffect(() => {
+    if (!confirmComplete) return undefined
+    const onPointerDown = event => {
+      if (event.target.closest(`[data-todo-complete="${task.id}"]`)) return
+      clearConfirmComplete()
+    }
+    const onKeyDown = event => {
+      if (event.key === 'Escape') clearConfirmComplete()
+    }
+    window.addEventListener('pointerdown', onPointerDown, true)
+    window.addEventListener('keydown', onKeyDown, true)
+    confirmTimerRef.current = setTimeout(clearConfirmComplete, CONFIRM_COMPLETE_MS)
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('keydown', onKeyDown, true)
+      if (confirmTimerRef.current) {
+        clearTimeout(confirmTimerRef.current)
+        confirmTimerRef.current = null
+      }
+    }
+  }, [clearConfirmComplete, confirmComplete, task.id])
   const due = dueLabel(task)
+  const draggable = task.status !== 'done'
+  const categoryIndex = categoryTasks.findIndex(item => item.id === task.id)
+  const canReorder = typeof reorder === 'function' && CATEGORY_SET.has(sectionFor(task))
+  const moveTask = async direction => {
+    const neighbour = categoryTasks[categoryIndex + direction]
+    if (!neighbour || disabled) return
+    const saved = await reorder(task.id, {
+      category: task.category,
+      ...(direction < 0 ? { beforeId: neighbour.id } : { afterId: neighbour.id })
+    })
+    if (saved) host.notify({ kind: 'info', message: `${task.title} moved ${direction < 0 ? 'earlier' : 'later'}.` })
+  }
+  const canStartNow = task.status === 'open' && (task.plan !== 'now' || task.inbox)
+  const canWorkWithHermes = task.status === 'open' || (task.sessionId && task.sessionState === 'active')
+  const waitHint = ['waiting', 'blocked'].includes(task.status) && !(task.sessionId && task.sessionState === 'active')
+
+  const handlePointerDown = event => {
+    if (!draggable) return
+    if (event.button !== 0) return
+    const target = event.target
+    if (target.closest('button, a, input, textarea, select, [contenteditable]')) return
+    if (dragPointerState.cleanup) endPointerDrag(dragPointerState, null, false)
+    dragPointerState.task = task
+    dragPointerState.startX = event.clientX
+    dragPointerState.startY = event.clientY
+    dragPointerState.pointerId = event.pointerId
+    const row = event.currentTarget.getBoundingClientRect()
+    dragPointerState.offsetX = Math.min(40, event.clientX - row.left)
+    dragPointerState.offsetY = 12
+    let armed = false
+
+    // Listeners live across both phases so cancel/blur/Escape always disarm.
+    const onMove = moveEvent => {
+      if (moveEvent.pointerId !== dragPointerState.pointerId) return
+      if (armed) {
+        const ghost = dragPointerState.ghost
+        if (ghost) {
+          ghost.style.left = `${moveEvent.clientX - dragPointerState.offsetX}px`
+          ghost.style.top = `${moveEvent.clientY - dragPointerState.offsetY}px`
+        }
+        updateDropIndicator(moveEvent.clientX, moveEvent.clientY)
+        return
+      }
+      const dx = moveEvent.clientX - dragPointerState.startX
+      const dy = moveEvent.clientY - dragPointerState.startY
+      if (Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
+        armed = true
+        beginPointerDrag(dragPointerState, moveEvent)
+      }
+    }
+    const isOurPointer = event_ => event_.pointerId === dragPointerState.pointerId
+    const onUp = upEvent => {
+      if (!isOurPointer(upEvent)) return
+      endPointerDrag(dragPointerState, upEvent, armed)
+    }
+    const onCancel = cancelEvent => {
+      if (cancelEvent.pointerId !== undefined && !isOurPointer(cancelEvent)) return
+      endPointerDrag(dragPointerState, null, false)
+    }
+    const onKey = keyEvent => {
+      if (keyEvent.key === 'Escape') endPointerDrag(dragPointerState, null, false)
+    }
+    const onBlur = () => endPointerDrag(dragPointerState, null, false)
+    const detach = () => {
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onUp, true)
+      window.removeEventListener('pointercancel', onCancel, true)
+      window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('blur', onBlur, true)
+    }
+    window.addEventListener('pointermove', onMove, true)
+    window.addEventListener('pointerup', onUp, true)
+    window.addEventListener('pointercancel', onCancel, true)
+    window.addEventListener('keydown', onKey, true)
+    window.addEventListener('blur', onBlur, true)
+    dragPointerState.cleanup = detach
+  }
+
+  // A row can unmount mid-drag (filter, poll reorder, task deleted elsewhere).
+  // Without this the listeners, ghost and userSelect would outlive the component.
+  useEffect(() => () => {
+    if (dragPointerState.task?.id === task.id && dragPointerState.cleanup) {
+      endPointerDrag(dragPointerState, null, false)
+    }
+  }, [task.id])
 
   return jsxs('div', {
     className: cn(
       'group w-full min-w-0 max-w-full overflow-hidden border-b border-(--ui-stroke-secondary) py-2 last:border-b-0',
-      prominent && 'border-l-2 pl-2.5'
+      prominent && 'border-l-2 pl-2.5',
+      draggable && 'cursor-grab active:cursor-grabbing'
     ),
     style: prominent ? { borderLeftColor: 'var(--ui-accent)' } : undefined,
+    onPointerDown: handlePointerDown,
     children: [
       jsxs('div', {
-        className: 'flex min-w-0 items-start gap-2',
+        className: 'min-w-0',
         children: [
           jsxs('div', {
-            className: 'min-w-0 flex-1',
+            className: 'flex min-w-0 items-start gap-x-2',
             children: [
-              jsx('div', {
+              jsxs('div', {
                 className: cn(
-                  'break-words [overflow-wrap:anywhere] text-xs leading-5 text-(--ui-text-primary)',
+                  'min-w-0 flex-1 break-words [overflow-wrap:anywhere] text-xs leading-5 text-(--ui-text-primary)',
                   task.status === 'done' && 'text-(--ui-text-quaternary) line-through'
                 ),
-                children: task.title
+                children: [
+                  PRIORITY_PILL[task.priority] ? jsx(PriorityPill, { priority: task.priority }) : null,
+                  task.title
+                ]
               }),
-              (reason || due || task.project || task.priority || task.owner || task.nextAction || task.recurrence || task.inbox) && jsx('div', {
-                className: cn(
-                  'mt-0.5 truncate text-[0.625rem] text-(--ui-text-quaternary)',
-                  due?.startsWith('Overdue') && 'font-medium text-(--ui-text-secondary)'
-                ),
-                children: [reason, task.inbox ? 'Inbox' : null, due, task.project, task.owner, task.priority ? `P${task.priority}` : null, task.nextAction, task.recurrenceRule || task.recurrence].filter(Boolean).join(' · ')
+              jsxs('div', {
+                className: 'flex shrink-0 items-center gap-0.5 self-start',
+                children: [
+                  jsx(IconButton, {
+                    disabled,
+                    expanded: editing,
+                    icon: icons.MoreHorizontal,
+                    label: 'Plan, status and due date',
+                    onClick: () => { if (editing) void closeRequestRef.current?.(); else setEditing(true) }
+                  }),
+                  canReorder && jsx(IconButton, { disabled: disabled || categoryIndex <= 0, icon: icons.ArrowUp, label: 'Move task earlier', onClick: () => void moveTask(-1) }),
+                  canReorder && jsx(IconButton, { disabled: disabled || categoryIndex < 0 || categoryIndex >= categoryTasks.length - 1, icon: icons.ArrowDown, label: 'Move task later', onClick: () => void moveTask(1) }),
+                  task.status === 'done'
+                    ? jsx(IconButton, { disabled, icon: icons.RefreshCw, label: 'Reopen', onClick: () => void update(task.id, { status: 'open', waitingOn: null, reviewDate: null, blocker: null }) })
+                    : jsx('span', {
+                        'data-todo-complete': task.id,
+                        children: jsx(IconButton, {
+                          disabled,
+                          icon: confirmComplete ? icons.CheckCircle2 : icons.Check,
+                          label: confirmComplete ? 'Confirm complete' : 'Complete',
+                          tone: confirmComplete ? 'accent' : 'quiet',
+                          onClick: () => {
+                            if (!confirmComplete) {
+                              setConfirmComplete(true)
+                              return
+                            }
+                            clearConfirmComplete()
+                            haptic('success')
+                            void update(task.id, { status: 'done' })
+                          }
+                        })
+                      })
+                ]
               })
             ]
           }),
           jsxs('div', {
-            className: 'flex shrink-0 items-center gap-0.5 self-start',
+            'data-todo-due-row': '',
+            className: cn(
+              'mt-0.5 flex w-full items-center gap-1',
+              prominent ? 'justify-start' : 'justify-between'
+            ),
             children: [
-              jsx(EstimateButton, { disabled, minutes: task.estimate, onClick: () => void cycleEstimate(task) }),
-              jsx(IconButton, {
-                disabled,
-                expanded: editing,
-                icon: icons.MoreHorizontal,
-                label: 'Plan, status and due date',
-                onClick: () => setEditing(value => !value)
+              jsxs('div', {
+                className: 'flex shrink-0 items-baseline gap-0.5 whitespace-nowrap',
+                children: [
+                  due ? jsx('span', {
+                    className: cn(
+                      'text-[0.625rem] text-(--ui-text-quaternary)',
+                      due.startsWith('Overdue') && 'font-medium text-(--ui-text-secondary)'
+                    ),
+                    children: `${due} ·`
+                  }, 'due-label') : null,
+                  jsx(EstimateButton, { disabled, minutes: task.estimate, onClick: () => void cycleEstimate(task) })
+                ]
               }),
-              task.status === 'done'
-                ? jsx(IconButton, { disabled, icon: icons.RefreshCw, label: 'Reopen', onClick: () => void update(task.id, { status: 'open', waitingOn: null, reviewDate: null, blocker: null }) })
-                : jsx(IconButton, { disabled, icon: icons.Check, label: 'Complete', onClick: () => {
-                    haptic('success')
-                    void update(task.id, { status: 'done' })
-                  } })
+              task.status !== 'done' && jsxs('div', {
+                className: 'flex shrink-0 flex-wrap items-center justify-end gap-1',
+                children: [
+                  canStartNow && jsx(Button, {
+                    disabled,
+                    onClick: () => void update(task.id, { plan: 'now', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }),
+                    size: 'xs',
+                    type: 'button',
+                    variant: 'secondary',
+                    children: 'Start now'
+                  }),
+                  canWorkWithHermes && jsx(Button, {
+                    className: cn(prominent ? '' : 'opacity-80 group-hover:opacity-100'),
+                    disabled,
+                    onClick: () => void workWithHermes(task),
+                    size: 'xs',
+                    type: 'button',
+                    variant: prominent ? 'default' : 'secondary',
+                    children: jsxs('span', {
+                      className: 'inline-flex items-center gap-1',
+                      children: [
+                        jsx(icons.MessageCircle, { className: 'size-3' }),
+                        workingId === task.id
+                          ? 'Sending…'
+                          : task.sessionId && task.sessionState === 'active'
+                            ? task.status === 'open' ? 'Resume with Hermes' : 'Open linked session'
+                            : 'Work with Hermes'
+                      ]
+                    })
+                  }),
+                  waitHint && jsx('span', {
+                    className: 'text-[0.625rem] text-(--ui-text-quaternary)',
+                    children: task.status === 'blocked' ? 'Clear the blocker to start Hermes.' : 'Reopen when the wait is over.'
+                  })
+                ]
+              })
             ]
-          })
+          }),
+              task.brief && jsx('div', {
+                className: 'mt-0.5 line-clamp-2 break-words text-[0.625rem] leading-4 text-(--ui-text-tertiary)',
+                children: task.brief.replace(/\s+/g, ' ').trim()
+              }),
+              task.subtaskCount > 0 && jsxs('div', {
+                className: 'mt-0.5 min-w-0',
+                children: [
+                  jsxs('button', {
+                    className: 'inline-flex items-center gap-1 text-[0.625rem] text-(--ui-text-quaternary)',
+                    onClick: event => {
+                      event.stopPropagation()
+                      setSubtasksOpen(value => !value)
+                    },
+                    type: 'button',
+                    children: [
+                      jsx(subtasksOpen ? icons.ChevronDown : icons.ChevronRight, { className: 'size-3' }),
+                      `${task.subtaskDoneCount || 0}/${task.subtaskCount}`
+                    ]
+                  }),
+                  subtasksOpen && jsx('div', {
+                    'data-todo-card-subtask': '',
+                    className: 'mt-0.5 space-y-0.5',
+                    children: (task.subtasks || []).map(item => jsxs('button', {
+                      className: 'flex min-w-0 items-start gap-1 text-left',
+                      disabled,
+                      onClick: event => {
+                        event.stopPropagation()
+                        void updateSubtask(task.id, item.id, { done: !item.done })
+                      },
+                      type: 'button',
+                      children: [
+                        jsx('span', {
+                          'aria-hidden': true,
+                          className: cn(
+                            'mt-0.5 size-2.5 shrink-0 rounded-[2px] border',
+                            item.done
+                              ? 'border-(--ui-accent) bg-(--ui-accent)'
+                              : 'border-(--ui-stroke-primary) bg-transparent'
+                          )
+                        }),
+                        jsx('span', {
+                          className: cn(
+                            'min-w-0 flex-1 truncate text-[0.625rem] leading-4',
+                            item.done ? 'text-(--ui-text-quaternary) line-through' : 'text-(--ui-text-tertiary)'
+                          ),
+                          children: item.title.replace(/\s+/g, ' ').trim()
+                        })
+                      ]
+                    }, item.id))
+                  })
+                ]
+              }),
+              (reason || task.project || task.owner || task.nextAction || task.recurrence) && jsx('div', {
+                className: 'mt-0.5 truncate text-[0.625rem] text-(--ui-text-quaternary)',
+                children: [reason, task.project, task.owner, task.nextAction, task.recurrenceRule || task.recurrence].filter(Boolean).join(' · ')
+              })
         ]
       }),
-      editing && jsx(TaskDetails, { close: () => setEditing(false), completeSession, ctx, disabled, remove, task, update }),
-      task.status !== 'done' && jsxs('div', {
-        className: 'mt-1.5 flex flex-wrap items-center gap-1',
-        children: [
-          task.status === 'open' && (task.plan !== 'now' || task.inbox) && jsx(Button, {
-            disabled,
-            onClick: () => void update(task.id, { plan: 'now', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }),
-            size: 'xs',
-            type: 'button',
-            variant: 'secondary',
-            children: 'Start now'
-          }),
-          (task.status === 'open' || (task.sessionId && task.sessionState === 'active')) && jsx(Button, {
-            className: cn(prominent ? '' : 'opacity-80 group-hover:opacity-100'),
-            disabled,
-            onClick: () => void workWithHermes(task),
-            size: 'xs',
-            type: 'button',
-            variant: prominent ? 'default' : 'secondary',
-            children: jsxs('span', {
-              className: 'inline-flex items-center gap-1',
-              children: [
-                jsx(icons.MessageCircle, { className: 'size-3' }),
-                workingId === task.id
-                  ? 'Sending…'
-                  : task.sessionId && task.sessionState === 'active'
-                    ? task.status === 'open' ? 'Resume with Hermes' : 'Open linked session'
-                    : 'Work with Hermes'
-              ]
-            })
-          }),
-          ['waiting', 'blocked'].includes(task.status) && !(task.sessionId && task.sessionState === 'active') && jsx('span', {
-            className: 'text-[0.625rem] text-(--ui-text-quaternary)',
-            children: task.status === 'blocked' ? 'Clear the blocker to start Hermes.' : 'Reopen when the wait is over.'
-          })
-        ]
+      editing && jsx(TaskDetails, {
+        closeRequestRef,
+        addSubtask,
+        boardRevision,
+        close: () => setEditing(false),
+        completeSession,
+        ctx,
+        disabled,
+        remove,
+        removeSubtask,
+        reorderSubtask,
+        task,
+        update,
+        updateSubtask
       })
     ]
   })
@@ -1137,38 +2023,136 @@ function CollapsibleSection(props) {
   })
 }
 
+const CATEGORY_ORDER = ['today', 'tomorrow', 'this-week', 'this-month', 'soon']
+
+let dropContext = { sections: {}, reorder: null, indicator: null }
+
+const dragActiveStore = { value: false, listeners: new Set() }
+function setDragActive(value) {
+  if (dragActiveStore.value === value) return
+  dragActiveStore.value = value
+  for (const listener of dragActiveStore.listeners) listener()
+}
+function useDragActive() {
+  const [value, setValue] = useState(dragActiveStore.value)
+  useEffect(() => {
+    const listener = () => setValue(dragActiveStore.value)
+    dragActiveStore.listeners.add(listener)
+    return () => {
+      dragActiveStore.listeners.delete(listener)
+    }
+  }, [])
+  return value
+}
+
+function updateDropIndicator(x, y) {
+  const target = resolveDropTarget(x, y)
+  if (!target) {
+    clearDropIndicator()
+    return
+  }
+  const { categoryId, index } = target
+  const line = document.querySelector(`[data-drop-line="${categoryId}-${index}"]`)
+  if (dropContext.indicator === line) return
+  if (dropContext.indicator) dropContext.indicator.style.opacity = '0'
+  if (line) {
+    line.style.opacity = '1'
+    dropContext.indicator = line
+  } else {
+    dropContext.indicator = null
+  }
+}
+
+function clearDropIndicator() {
+  if (dropContext.indicator) dropContext.indicator.style.opacity = '0'
+  dropContext.indicator = null
+}
+
+function DropCategorySection({ categoryId, rowProps, pendingIds, tasks }) {
+  useEffect(() => {
+    dropContext.sections[categoryId] = tasks
+    dropContext.reorder = rowProps.reorder
+    dropContext.update = rowProps.update
+    return () => {
+      delete dropContext.sections[categoryId]
+    }
+  }, [categoryId, rowProps.reorder, rowProps.update, tasks])
+
+  const dragActive = useDragActive()
+  if (!tasks.length && !dragActive) return null
+
+  const dropLine = index => jsx('div', {
+    'data-drop-line': `${categoryId}-${index}`,
+    className: 'pointer-events-none h-0.5 rounded-full bg-(--ui-accent)',
+    style: { opacity: 0, transition: 'opacity 80ms linear' }
+  }, `drop-${categoryId}-${index}`)
+
+  return jsxs('section', {
+    'data-todo-category': categoryId,
+    className: 'mt-4 min-w-0 max-w-full first:mt-0',
+    children: [
+      jsxs('div', {
+        className: 'mb-1.5 flex items-baseline justify-between gap-2',
+        children: [
+          jsx('h3', { className: 'text-xs font-semibold text-(--ui-text-secondary)', children: CATEGORY_LABELS[categoryId] || categoryId }),
+          jsx('span', { className: 'text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)', children: tasks.length })
+        ]
+      }),
+      dropLine(0),
+      tasks.length
+        ? tasks.map((task, index) => jsxs('div', {
+            'data-todo-task': task.id,
+            children: [
+              jsx(TaskRow, { ...rowProps, categoryTasks: tasks, pending: pendingIds.has(task.id), task }, task.id),
+              dropLine(index + 1)
+            ]
+          }, task.id))
+        : jsx('div', {
+            className: 'py-1 text-[0.6875rem] text-(--ui-text-quaternary)',
+            children: 'Drop tasks here.'
+          })
+    ]
+  })
+}
+
 function BoardView({ remote, rowProps, sections }) {
   return jsxs('div', {
     children: [
       jsx(Section, {
         count: sections.inbox.length,
         title: 'Inbox',
-        children: sections.inbox.length
-          ? sections.inbox.map(task => jsx(TaskRow, { ...rowProps, pending: remote.pendingIds.has(task.id), task }, task.id))
-          : jsx('div', { className: 'py-1 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'Captured tasks wait here until you start or plan them.' })
+        children: jsx('div', {
+          'data-todo-inbox': '1',
+          children: sections.inbox.length
+            ? sections.inbox.map(task => jsx(TaskRow, { ...rowProps, pending: remote.pendingIds.has(task.id), task }, task.id))
+            : jsxs('div', {
+                className: 'py-1 text-center text-[0.6875rem] leading-4 text-(--ui-text-quaternary)',
+                children: [
+                  jsx('div', { children: 'Captured tasks wait here until you start or plan them.' }),
+                  jsx('div', { children: 'Drop tasks here to park them.' })
+                ]
+              })
+        })
       }),
       jsx(Section, {
         count: sections.now.length,
         title: 'Now',
-        children: sections.now.length
-          ? sections.now.map(task => jsx(TaskRow, { ...rowProps, pending: remote.pendingIds.has(task.id), prominent: true, task }, task.id))
-          : jsx('div', {
-              className: 'border-l-2 border-l-(--ui-stroke-secondary) py-2 pl-2.5 text-xs leading-5 text-(--ui-text-quaternary)',
-              children: 'Nothing is running. Choose Start now when you are ready.'
-            })
+        children: jsx('div', {
+          'data-todo-now': '1',
+          children: sections.now.length
+            ? sections.now.map(task => jsx(TaskRow, { ...rowProps, pending: remote.pendingIds.has(task.id), prominent: true, task }, task.id))
+            : jsx('div', {
+                className: 'border-l-2 border-l-(--ui-stroke-secondary) py-2 pl-2.5 text-xs leading-5 text-(--ui-text-quaternary)',
+                children: 'Nothing is running. Drop a task here or choose Start now.'
+              })
+        })
       }),
-      jsx(Section, {
-        count: sections.today.length,
-        title: 'Today',
-        children: sections.today.length
-          ? sections.today.map(task => jsx(TaskRow, { ...rowProps, pending: remote.pendingIds.has(task.id), task }, task.id))
-          : jsx(EmptyState, {
-              className: 'min-h-20 py-3',
-              description: 'Nothing else is competing for attention.',
-              title: 'Clear'
-            })
-      }),
-      jsx(CollapsibleSection, { pendingIds: remote.pendingIds, rowProps, tasks: sections.later, title: 'Later' }),
+      CATEGORY_ORDER.map(categoryId => jsx(DropCategorySection, {
+        categoryId,
+        pendingIds: remote.pendingIds,
+        rowProps,
+        tasks: sections[categoryId]
+      }, categoryId)),
       jsx(CollapsibleSection, { open: true, pendingIds: remote.pendingIds, rowProps, tasks: sections.blocked, title: 'Blocked' }),
       jsx(CollapsibleSection, { pendingIds: remote.pendingIds, rowProps, tasks: sections.waiting, title: 'Waiting' }),
       jsx(CollapsibleSection, { pendingIds: remote.pendingIds, rowProps, tasks: sections.done, title: 'Closed' })
@@ -1180,18 +2164,25 @@ function TodoPane({ ctx }) {
   const remote = useRemoteBoard(ctx)
   const [draft, setDraft] = useState('')
   const [filter, setFilter] = useState('')
-  const [todayKey, setTodayKey] = useState(localDateKey)
   const [workingId, setWorkingId] = useState(null)
   const workPending = useRef(new Set())
   const gateway = useValue(host.state.gateway)
   const sessionId = useValue(host.state.activeSessionId)
 
   const sections = useMemo(() => {
-    const grouped = { inbox: [], now: [], today: [], later: [], waiting: [], blocked: [], done: [] }
+    const grouped = {
+      inbox: [], now: [], today: [], tomorrow: [], 'this-week': [], 'this-month': [],
+      soon: [], waiting: [], blocked: [], done: []
+    }
     const needle = filter.trim().toLocaleLowerCase()
     for (const task of remote.board.tasks) {
       const haystack = [task.title, task.project, task.recurrence, task.recurrenceRule, task.brief, task.nextAction, task.owner, task.waitingOn, task.blocker].filter(Boolean).join(' ').toLocaleLowerCase()
-      if (!needle || haystack.includes(needle)) grouped[sectionFor(task, todayKey)].push(task)
+      if (!needle || haystack.includes(needle)) grouped[sectionFor(task)].push(task)
+    }
+    const byPosition = (a, b) => (a.position || 0) - (b.position || 0) ||
+      timeValue(a.createdAt) - timeValue(b.createdAt)
+    for (const key of ['today', 'tomorrow', 'this-week', 'this-month', 'soon']) {
+      grouped[key].sort(byPosition)
     }
     const dueThenCreated = (a, b) => {
       const aPriority = a.priority || 99
@@ -1200,15 +2191,12 @@ function TodoPane({ ctx }) {
       const bDue = b.dueDate || b.dueAt || '9999'
       return aPriority - bPriority || aDue.localeCompare(bDue) || timeValue(a.createdAt) - timeValue(b.createdAt)
     }
-    for (const key of ['inbox', 'now', 'today', 'later', 'waiting', 'blocked']) grouped[key].sort(dueThenCreated)
+    for (const key of ['inbox', 'now', 'waiting', 'blocked']) {
+      grouped[key].sort(dueThenCreated)
+    }
     grouped.done.sort((a, b) => timeValue(b.completedAt) - timeValue(a.completedAt))
     return grouped
-  }, [filter, remote.board, todayKey])
-
-  useEffect(() => {
-    const timer = setInterval(() => setTodayKey(localDateKey()), 60_000)
-    return () => clearInterval(timer)
-  }, [])
+  }, [filter, remote.board])
 
   const openCount = remote.board.tasks.filter(task => task.status !== 'done').length
   const shownCount = Object.values(sections).reduce((count, tasks) => count + tasks.length, 0)
@@ -1247,6 +2235,17 @@ function TodoPane({ ctx }) {
       setWorkingId(task.id)
       let createdSession = null
       let linked = false
+      // A failed session.close or completeSession leaves real state behind, so
+      // report it instead of implying the board link and host session are closed.
+      const cleanupFailures = []
+      const closeCreatedSession = async () => {
+        if (!createdSession?.session_id) return
+        try {
+          await host.request('session.close', { session_id: createdSession.session_id })
+        } catch (closeError) {
+          cleanupFailures.push(closeError)
+        }
+      }
       try {
         const params = {
           cols: 96,
@@ -1266,17 +2265,23 @@ function TodoPane({ ctx }) {
         }
         linked = await remote.linkSession(task.id, createdSession.stored_session_id)
         if (!linked) {
-          await host.request('session.close', { session_id: createdSession.session_id }).catch(() => undefined)
+          await closeCreatedSession()
+          reportCleanupFailures(cleanupFailures, 'the session could not be closed')
           return
         }
         await host.request('prompt.submit', { session_id: createdSession.session_id, text: buildWorkPrompt({ ...task, plan: 'now', inbox: false, sessionId: createdSession.stored_session_id, sessionState: 'active' }) })
         host.navigate(`/${encodeURIComponent(createdSession.stored_session_id)}`)
       } catch (error) {
-        if (createdSession?.session_id) {
-          await host.request('session.close', { session_id: createdSession.session_id }).catch(() => undefined)
+        await closeCreatedSession()
+        if (linked) {
+          try {
+            await remote.completeSession(task.id)
+          } catch (completeError) {
+            cleanupFailures.push(completeError)
+          }
         }
-        if (linked) await remote.completeSession(task.id)
         host.notifyError(error, 'Could not send this task to Hermes')
+        reportCleanupFailures(cleanupFailures, 'the task is still linked to a Hermes session')
       } finally {
         workPending.current.delete(task.id)
         setWorkingId(null)
@@ -1286,18 +2291,24 @@ function TodoPane({ ctx }) {
   )
 
   const connectionLabel = remote.connection === 'online'
-    ? 'v0.2.0 · Shared with Hermes'
+    ? 'v0.3.0-dev · Shared with Hermes'
     : remote.connection === 'connecting'
-      ? 'v0.2.0 · Connecting…'
-      : `v0.2.0 · Offline: ${remote.error || 'request failed'}`
+      ? 'v0.3.0-dev · Connecting…'
+      : `v0.3.0-dev · Offline: ${remote.error || 'request failed'}`
 
   const rowProps = {
+    addSubtask: remote.addSubtask,
+    boardRevision: remote.board.revision,
     completeSession: remote.completeSession,
     ctx,
     cycleEstimate: remote.cycleEstimate,
     pending: false,
     remove: remote.remove,
+    removeSubtask: remote.removeSubtask,
+    reorder: remote.reorder,
+    reorderSubtask: remote.reorderSubtask,
     update: remote.update,
+    updateSubtask: remote.updateSubtask,
     workingId,
     workWithHermes
   }
@@ -1309,19 +2320,15 @@ function TodoPane({ ctx }) {
         className: 'border-b border-(--ui-stroke-secondary) px-3 py-3',
         children: [
           jsxs('div', {
-            className: 'flex items-start justify-between gap-3',
+            style: { display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', columnGap: 12 },
             children: [
+              jsx('h2', { className: 'text-sm font-semibold text-(--ui-text-primary)', children: 'Todo' }),
+              jsx('span', { className: 'text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)', children: dateLabel }),
               jsxs('div', {
+                className: 'flex items-baseline justify-end gap-1.5',
                 children: [
-                  jsx('h2', { className: 'text-sm font-semibold text-(--ui-text-primary)', children: 'Todo' }),
-                  jsx('p', { className: 'mt-0.5 text-[0.6875rem] text-(--ui-text-quaternary)', children: dateLabel })
-                ]
-              }),
-              jsxs('div', {
-                className: 'text-right',
-                children: [
-                  jsx('div', { className: 'text-xs font-medium tabular-nums text-(--ui-text-secondary)', children: openCount }),
-                  jsx('div', { className: 'text-[0.625rem] text-(--ui-text-quaternary)', children: 'open' })
+                  jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-quaternary)', children: 'open' }),
+                  jsx('span', { className: 'text-lg font-semibold tabular-nums leading-none text-(--ui-text-primary)', children: openCount })
                 ]
               })
             ]
@@ -1330,7 +2337,7 @@ function TodoPane({ ctx }) {
             className: 'mt-3 flex gap-1.5',
             onSubmit: event => void addTask(event),
             children: [
-              jsx(Input, {
+              jsx(DimInput, {
                 'aria-label': 'Capture a task to Inbox',
                 className: 'min-w-0 flex-1',
                 disabled: remote.connection === 'offline',
@@ -1358,7 +2365,7 @@ function TodoPane({ ctx }) {
           remote.board.tasks.length > 12 && jsxs('div', {
             className: 'mt-2 flex items-center gap-2',
             children: [
-              jsx(Input, {
+              jsx(DimInput, {
                 'aria-label': 'Filter tasks',
                 className: 'h-7 min-w-0 flex-1 text-xs',
                 onChange: event => setFilter(event.target.value),
@@ -1409,16 +2416,56 @@ export default {
   id: ID,
   name: 'Todo',
   register(ctx) {
+    const paneOptions = {
+      dock: { pane: 'workspace', pos: 'right' },
+      minWidth: '22rem',
+      render: () => jsx(TodoPane, { ctx }),
+      title: 'Todo'
+    }
+    let closeWorkspace = null
+
+    const showTodo = () => {
+      if (typeof host.openWorkspace === 'function') {
+        closeWorkspace = host.openWorkspace('todo', {
+          ...paneOptions,
+          onClose: () => {
+            closeWorkspace = null
+          }
+        })
+        return
+      }
+      if (typeof host.revealPane === 'function') host.revealPane(`${ID}:pane`)
+    }
+
+    if (typeof host.openWorkspace === 'function') {
+      showTodo()
+    } else {
+      ctx.register({
+        id: 'pane',
+        area: 'panes',
+        title: 'todo',
+        data: {
+          placement: 'right',
+          dock: { pane: 'workspace', pos: 'right' },
+          width: '360px'
+        },
+        render: paneOptions.render
+      })
+    }
+
     ctx.register({
-      id: 'pane',
-      area: 'panes',
-      title: 'todo',
+      id: 'open',
+      area: PALETTE_AREA,
       data: {
-        placement: 'right',
-        dock: { pane: 'workspace', pos: 'right' },
-        width: '360px'
-      },
-      render: () => jsx(TodoPane, { ctx })
+        id: 'hermes-todo.open',
+        keywords: ['todo', 'tasks', 'board', 'open', 'reopen', 'show'],
+        label: 'Show Todo',
+        run: showTodo
+      }
+    })
+
+    ctx.onDispose(() => {
+      closeWorkspace?.()
     })
   }
 }
