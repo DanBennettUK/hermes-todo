@@ -25,6 +25,10 @@ except ImportError:  # Standalone source-tree execution and tests.
 
 VALID_PLANS = frozenset({"now", "today", "later"})
 VALID_STATUSES = frozenset({"open", "waiting", "blocked", "done"})
+VALID_CATEGORIES = frozenset(
+    {"today", "tomorrow", "this-week", "this-month", "soon"}
+)
+DEFAULT_CATEGORY = "today"
 VALID_EXECUTION_MODES = frozenset({"manual", "supervised", "autonomous"})
 VALID_APPROVAL_STATES = frozenset({"not-required", "pending", "approved", "rejected"})
 VALID_SESSION_STATES = frozenset({"active", "completed"})
@@ -34,7 +38,7 @@ MAX_SOURCE_PAYLOAD_BYTES = 64 * 1024
 MAX_EVENT_DATA_BYTES = 64 * 1024
 MAX_ARTEFACTS = 20
 MAX_ARTEFACT_LENGTH = 1000
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _UNSET = object()
 
 
@@ -84,6 +88,8 @@ def _create_v4_tasks(conn: sqlite3.Connection, table: str = "tasks") -> None:
             title TEXT NOT NULL,
             plan TEXT NOT NULL CHECK (plan IN ('now', 'today', 'later')),
             status TEXT NOT NULL CHECK (status IN ('open', 'waiting', 'blocked', 'done')),
+            category TEXT NOT NULL DEFAULT 'today'
+                CHECK (category IN ('today', 'tomorrow', 'this-week', 'this-month', 'soon')),
             estimate INTEGER NOT NULL CHECK (estimate BETWEEN 5 AND 480),
             due_date TEXT,
             due_at TEXT,
@@ -280,6 +286,14 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
                 if migrated_count != legacy_count:
                     raise RuntimeError("Hermes Todo migration row-count mismatch")
             elif {"plan", "status", "due_date", "due_at"}.issubset(columns):
+                if "category" not in columns:
+                    conn.execute(
+                        "ALTER TABLE tasks ADD COLUMN category TEXT NOT NULL DEFAULT 'today'"
+                        " CHECK (category IN ('today', 'tomorrow', 'this-week', 'this-month', 'soon'))"
+                    )
+                    conn.execute(
+                        "UPDATE tasks SET category = 'soon' WHERE plan = 'later'"
+                    )
                 for name, declaration in _V4_ADDITIONS.items():
                     if name not in columns:
                         conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {declaration}")
@@ -368,6 +382,7 @@ def _clean_estimate(value: Any) -> int:
     if value < 5 or value > 480:
         raise BoardError("Estimate must be between 5 and 480 minutes")
     return value
+
 
 
 def _clean_due_date(value: Any, field: str = "Due date") -> str | None:
@@ -558,6 +573,7 @@ def _row_to_task(row: sqlite3.Row) -> dict[str, Any]:
         "lane": status if status != "open" else plan,
         "plan": plan,
         "status": status,
+        "category": str(row["category"]),
         "estimate": row["estimate"],
         "dueDate": row["due_date"],
         "dueAt": row["due_at"],
@@ -608,8 +624,6 @@ def _read_board(conn: sqlite3.Connection) -> dict[str, Any]:
             CASE status WHEN 'open' THEN 0 WHEN 'waiting' THEN 1 WHEN 'blocked' THEN 2 ELSE 3 END,
             CASE plan WHEN 'now' THEN 0 WHEN 'today' THEN 1 ELSE 2 END,
             inbox DESC,
-            COALESCE(due_date, due_at) IS NULL,
-            COALESCE(due_date, due_at),
             created_at,
             id
         """
@@ -738,6 +752,7 @@ def _prepare_task_values(
     estimate: Any = DEFAULT_ESTIMATE,
     plan: Any = None,
     status: Any = None,
+    category: Any = None,
     due_date: Any = None,
     due_at: Any = None,
     due_timezone: Any = None,
@@ -779,6 +794,11 @@ def _prepare_task_values(
     clean_plan = _clean_choice(plan if plan is not None else legacy_plan, VALID_PLANS, "plan")
     clean_status = _clean_choice(
         status if status is not None else legacy_status, VALID_STATUSES, "status"
+    )
+    clean_category = (
+        _clean_choice(category, VALID_CATEGORIES, "category")
+        if category is not None
+        else DEFAULT_CATEGORY
     )
     clean_due_date = _clean_due_date(due_date)
     clean_due_at = _clean_due_at(due_at)
@@ -842,6 +862,7 @@ def _prepare_task_values(
         "title": _clean_title(title),
         "plan": clean_plan,
         "status": clean_status,
+        "category": clean_category,
         "estimate": _clean_estimate(estimate),
         "due_date": clean_due_date,
         "due_at": clean_due_at,
@@ -883,7 +904,7 @@ def _prepare_task_values(
 
 
 _INSERT_COLUMNS = (
-    "id", "title", "plan", "status", "estimate", "due_date", "due_at",
+    "id", "title", "plan", "status", "category", "estimate", "due_date", "due_at",
     "due_timezone", "due_language", "source", "external_id", "project",
     "priority", "recurrence", "source_updated_at", "source_payload", "brief",
     "next_action", "closure_condition", "waiting_on", "review_date", "blocker",
@@ -900,6 +921,7 @@ def _insert_values(conn: sqlite3.Connection, values: dict[str, Any]) -> None:
         f"INSERT INTO tasks({', '.join(_INSERT_COLUMNS)}) VALUES ({placeholders})",
         [values[column] for column in _INSERT_COLUMNS],
     )
+
 
 
 def create_task(
@@ -982,7 +1004,7 @@ _ALIASES = {
 def _normalise_changes(changes: dict[str, Any]) -> dict[str, Any]:
     normalised = {_ALIASES.get(key, key): value for key, value in changes.items()}
     allowed = {
-        "title", "plan", "status", "estimate", "due_date", "due_at",
+        "title", "plan", "status", "category", "estimate", "due_date", "due_at",
         "due_timezone", "due_language", "source", "external_id", "project",
         "priority", "recurrence", "source_updated_at", "source_payload", "lane",
         "brief", "next_action", "closure_condition", "waiting_on", "review_date",
@@ -1005,6 +1027,7 @@ def _clean_updates(existing: sqlite3.Row, changes: dict[str, Any]) -> dict[str, 
         "title": _clean_title,
         "plan": lambda value: _clean_choice(value, VALID_PLANS, "plan"),
         "status": lambda value: _clean_choice(value, VALID_STATUSES, "status"),
+        "category": lambda value: _clean_choice(value, VALID_CATEGORIES, "category"),
         "estimate": _clean_estimate,
         "due_date": _clean_due_date,
         "due_at": _clean_due_at,
@@ -1112,6 +1135,11 @@ def _record_update_events(
             conn, task_id, "task.plan_changed", data=changed["plan"], actor=actor,
             source=event_source, created_at=now,
         )
+    if "category" in changed:
+        _append_event(
+            conn, task_id, "task.category_changed", data=changed["category"], actor=actor,
+            source=event_source, created_at=now,
+        )
     if "status" in changed:
         _append_event(
             conn, task_id, "task.status_changed", data=changed["status"], actor=actor,
@@ -1164,13 +1192,14 @@ def _record_update_events(
     generic = {
         key: value
         for key, value in changed.items()
-        if key not in {"title", "plan", "status", "waiting_on", "review_date", "blocker", "artefacts"}
+        if key not in {"title", "plan", "category", "status", "waiting_on", "review_date", "blocker", "artefacts"}
     }
     if generic:
         _append_event(
             conn, task_id, "task.edited", data={"changes": generic}, actor=actor,
             source=event_source, created_at=now,
         )
+
 
 
 def _advance_date(value: date, rule: str) -> date:
@@ -1238,6 +1267,7 @@ def _generate_next_occurrence(
         "title": row["title"],
         "plan": "today" if row["plan"] == "now" else row["plan"],
         "status": "open",
+        "category": str(row["category"]),
         "estimate": row["estimate"],
         "due_date": next_due_date,
         "due_at": next_due_at,
@@ -1452,6 +1482,7 @@ def search_tasks(
     *,
     plan: str | None = None,
     status: str | None = None,
+    category: str | None = None,
     project: str | None = None,
     owner: str | None = None,
     inbox: bool | None = None,
@@ -1462,6 +1493,9 @@ def search_tasks(
     clean_query = _clean_optional_text(query, "Search query", 500)
     clean_plan = _clean_choice(plan, VALID_PLANS, "plan") if plan is not None else None
     clean_status = _clean_choice(status, VALID_STATUSES, "status") if status is not None else None
+    clean_category = (
+        _clean_choice(category, VALID_CATEGORIES, "category") if category is not None else None
+    )
     clean_project = _clean_optional_text(project, "Project")
     clean_owner = _clean_optional_text(owner, "Owner", 200)
     if inbox is not None:
@@ -1484,6 +1518,8 @@ def search_tasks(
             if clean_plan and task["plan"] != clean_plan:
                 continue
             if clean_status and task["status"] != clean_status:
+                continue
+            if clean_category and task["category"] != clean_category:
                 continue
             if clean_project and (task["project"] or "").casefold() != clean_project.casefold():
                 continue
@@ -1859,7 +1895,7 @@ def complete_with_follow_up(
 
 
 _IMPORT_KEYS = {
-    "id", "title", "lane", "plan", "status", "estimate", "dueDate", "dueAt",
+    "id", "title", "lane", "plan", "status", "category", "estimate", "dueDate", "dueAt",
     "dueTimezone", "dueLanguage", "source", "externalId", "project", "priority",
     "recurrence", "sourceUpdatedAt", "sourcePayload", "createdAt", "brief",
     "nextAction", "closureCondition", "waitingOn", "reviewDate", "blocker", "artefacts",
@@ -1969,6 +2005,7 @@ def import_tasks(
                 lane=raw.get("lane"),
                 plan=raw.get("plan"),
                 status=raw.get("status"),
+                category=raw.get("category"),
                 estimate=raw.get("estimate", DEFAULT_ESTIMATE),
                 due_date=raw.get("dueDate"),
                 due_at=raw.get("dueAt"),

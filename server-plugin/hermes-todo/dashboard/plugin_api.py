@@ -43,6 +43,7 @@ class TaskCreateFields(StrictModel):
     estimate: int = Field(default=25, ge=5, le=480)
     plan: str = "today"
     status: str = "open"
+    category: str = "today"
     due_date: str | None = Field(default=None, alias="dueDate")
     due_at: str | None = Field(default=None, alias="dueAt")
     due_timezone: str | None = Field(default=None, alias="dueTimezone", max_length=100)
@@ -83,6 +84,7 @@ class TaskPatch(StrictModel):
     estimate: int | None = Field(default=None, ge=5, le=480)
     plan: str | None = None
     status: str | None = None
+    category: str | None = None
     due_date: str | None = Field(default=None, alias="dueDate")
     due_at: str | None = Field(default=None, alias="dueAt")
     due_timezone: str | None = Field(default=None, alias="dueTimezone", max_length=100)
@@ -201,6 +203,7 @@ def read_tasks(
     q: str | None = None,
     plan: str | None = None,
     status: str | None = None,
+    category: str | None = None,
     project: str | None = None,
     owner: str | None = None,
     inbox: bool | None = None,
@@ -208,7 +211,14 @@ def read_tasks(
 ):
     try:
         return search_tasks(
-            q, plan=plan, status=status, project=project, owner=owner, inbox=inbox, limit=limit
+            q,
+            plan=plan,
+            status=status,
+            category=category,
+            project=project,
+            owner=owner,
+            inbox=inbox,
+            limit=limit
         )
     except BoardError as exc:
         raise _bad_request(exc) from exc

@@ -97,7 +97,7 @@ class HermesTodoStoreTests(unittest.TestCase):
     def test_migrates_v2_without_losing_tasks_or_revision(self) -> None:
         self._create_v2_database()
         board = get_board()
-        self.assertEqual(board["version"], 4)
+        self.assertEqual(board["version"], 5)
         self.assertEqual(board["revision"], 7)
         self.assertEqual(len(board["tasks"]), 3)
         by_id = {task["id"]: task for task in board["tasks"]}
@@ -106,9 +106,10 @@ class HermesTodoStoreTests(unittest.TestCase):
         self.assertEqual(by_id["d"]["status"], "done")
         self.assertIsNone(by_id["n"]["dueDate"])
         self.assertIsNone(by_id["n"]["dueAt"])
+        self.assertEqual(by_id["n"]["category"], "today")
         conn = sqlite3.connect(resolve_db_path())
         try:
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 5)
         finally:
             conn.close()
 
@@ -368,6 +369,31 @@ class HermesTodoStoreTests(unittest.TestCase):
         task_id = board["tasks"][0]["id"]
         with self.assertRaisesRegex(BoardError, "UTF-8 bytes"):
             update_task(task_id, {"sourcePayload": {"value": "x" * MAX_SOURCE_PAYLOAD_BYTES}})
+
+    def test_import_stores_category_without_legacy_fields(self) -> None:
+        board = import_tasks(
+            [
+                {
+                    "id": "cat-import",
+                    "title": "Imported tomorrow",
+                    "category": "tomorrow",
+                    "unknownFlag": "retained",
+                }
+            ]
+        )
+        task = next(task for task in board["tasks"] if task["id"] == "cat-import")
+        self.assertEqual(task["category"], "tomorrow")
+
+        conn = sqlite3.connect(resolve_db_path())
+        try:
+            payload = conn.execute(
+                "SELECT source_payload FROM tasks WHERE id = 'cat-import'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        private_payload = json.loads(payload)
+        self.assertEqual(private_payload["legacyFields"], {"unknownFlag": "retained"})
+        self.assertNotIn("category", private_payload["legacyFields"])
 
     def test_import_does_not_replace_existing_now(self) -> None:
         existing = create_task("Existing focus", plan="now")
