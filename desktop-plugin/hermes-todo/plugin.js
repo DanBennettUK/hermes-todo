@@ -107,6 +107,28 @@ const dragPointerState = {
 }
 const DRAG_THRESHOLD_PX = 6
 
+// One teardown for both the armed (pre-threshold) and active phases. Escape and
+// window blur arrive as keyboard events with no pointerId, so every guard below
+// filters on the pointer only for pointer-typed events.
+function endPointerDrag(state, upEvent, commit) {
+  if (state.cleanup) {
+    state.cleanup()
+    state.cleanup = null
+  }
+  const task = state.task
+  const x = upEvent && Number.isFinite(upEvent.clientX) ? upEvent.clientX : 0
+  const y = upEvent && Number.isFinite(upEvent.clientY) ? upEvent.clientY : 0
+  document.body.style.userSelect = ''
+  setDragActive(false)
+  if (state.ghost?.parentNode) state.ghost.parentNode.removeChild(state.ghost)
+  clearDropIndicator()
+  state.task = null
+  state.active = false
+  state.pointerId = null
+  state.ghost = null
+  if (commit && task) dropTaskAt(task, x, y)
+}
+
 function beginPointerDrag(state, event) {
   state.active = true
   setDragActive(true)
@@ -122,38 +144,6 @@ function beginPointerDrag(state, event) {
   ghost.style.top = `${event.clientY - state.offsetY}px`
   document.body.appendChild(ghost)
   state.ghost = ghost
-
-  const onMove = moveEvent => {
-    if (moveEvent.pointerId !== state.pointerId) return
-    ghost.style.left = `${moveEvent.clientX - state.offsetX}px`
-    ghost.style.top = `${moveEvent.clientY - state.offsetY}px`
-    updateDropIndicator(moveEvent.clientX, moveEvent.clientY)
-  }
-  const finish = (upEvent, commit) => {
-    if (upEvent && upEvent.pointerId !== state.pointerId) return
-    window.removeEventListener('pointermove', onMove, true)
-    window.removeEventListener('pointerup', onUp, true)
-    window.removeEventListener('keydown', onKey, true)
-    document.body.style.userSelect = ''
-    setDragActive(false)
-    if (ghost.parentNode) ghost.parentNode.removeChild(ghost)
-    clearDropIndicator()
-    const task = state.task
-    const x = upEvent ? upEvent.clientX : 0
-    const y = upEvent ? upEvent.clientY : 0
-    state.task = null
-    state.active = false
-    state.pointerId = null
-    state.ghost = null
-    if (commit && task) dropTaskAt(task, x, y)
-  }
-  const onUp = upEvent => finish(upEvent, true)
-  const onKey = keyEvent => {
-    if (keyEvent.key === 'Escape') finish(keyEvent, false)
-  }
-  window.addEventListener('pointermove', onMove, true)
-  window.addEventListener('pointerup', onUp, true)
-  window.addEventListener('keydown', onKey, true)
 }
 
 
@@ -340,6 +330,15 @@ async function sharedBoardRest(ctx, path, options = {}) {
 
 function errorText(error) {
   return error instanceof Error ? error.message : String(error || 'unknown error')
+}
+
+function reportCleanupFailures(failures, consequence) {
+  if (!failures.length) return
+  const detail = failures.map(errorText).filter(Boolean).join('; ')
+  host.notify({
+    kind: 'warning',
+    message: `Cleanup failed: ${consequence}.${detail ? ` (${detail})` : ''}`
+  })
 }
 
 async function loadSharedBoard(ctx) {
@@ -593,8 +592,8 @@ function useRemoteBoard(ctx) {
           body: { ...changes, expectedRevision: revision, eventSource: 'desktop' },
           timeoutMs: 8000
         })
-        commitMutation(remote)
-        return true
+        const next = commitMutation(remote)
+        return { ok: true, revision: Number(next?.revision ?? remote?.revision) }
       } catch (error) {
         if (boardRef.current === optimistic) {
           boardRef.current = snapshot
@@ -1280,18 +1279,32 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
   currentDraftRef.current = currentDraft
 
   const deletedRef = useRef(false)
+  const savingRef = useRef(null)
   const openedRevisionRef = useRef(boardRevision)
 
   const flushSave = useCallback(async () => {
     if (deletedRef.current) return true
+    if (savingRef.current) return savingRef.current
     const snapshot = currentDraftRef.current
     const title = snapshot.title.trim()
     if (!title) return false
     const changes = changedTaskDetails(initialDraftRef.current, snapshot)
     if (Object.keys(changes).length === 0) return true
-    const saved = await update(task.id, changes, openedRevisionRef.current)
-    if (saved) initialDraftRef.current = { ...snapshot, title }
-    return saved
+    const run = (async () => {
+      const saved = await update(task.id, changes, openedRevisionRef.current)
+      if (!saved) return false
+      // Advance the editor baseline only on our own acknowledged write. Board
+      // polling must never move this, or a later external edit is silently lost.
+      if (Number.isInteger(saved.revision)) openedRevisionRef.current = saved.revision
+      initialDraftRef.current = { ...snapshot, title }
+      return true
+    })()
+    savingRef.current = run
+    try {
+      return await run
+    } finally {
+      if (savingRef.current === run) savingRef.current = null
+    }
   }, [task.id, update])
 
   useEffect(() => {
@@ -1572,10 +1585,15 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
                 setConfirmDelete(true)
                 return
               }
+              // Block the autosave timer and unmount flush before the first await,
+              // otherwise a dirty draft is PATCHed for a task being deleted.
+              deletedRef.current = true
+              if (savingRef.current) await savingRef.current.catch(() => false)
               if (await remove(task.id)) {
-                deletedRef.current = true
                 close()
+                return
               }
+              deletedRef.current = false
             },
             size: 'xs',
             type: 'button',
@@ -1657,6 +1675,7 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
     if (event.button !== 0) return
     const target = event.target
     if (target.closest('button, a, input, textarea, select, [contenteditable]')) return
+    if (dragPointerState.cleanup) endPointerDrag(dragPointerState, null, false)
     dragPointerState.task = task
     dragPointerState.startX = event.clientX
     dragPointerState.startY = event.clientY
@@ -1664,32 +1683,53 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
     const row = event.currentTarget.getBoundingClientRect()
     dragPointerState.offsetX = Math.min(40, event.clientX - row.left)
     dragPointerState.offsetY = 12
-    if (dragPointerState.cleanup) dragPointerState.cleanup()
     let armed = false
+
+    // Listeners live across both phases so cancel/blur/Escape always disarm.
     const onMove = moveEvent => {
       if (moveEvent.pointerId !== dragPointerState.pointerId) return
+      if (armed) {
+        const ghost = dragPointerState.ghost
+        if (ghost) {
+          ghost.style.left = `${moveEvent.clientX - dragPointerState.offsetX}px`
+          ghost.style.top = `${moveEvent.clientY - dragPointerState.offsetY}px`
+        }
+        updateDropIndicator(moveEvent.clientX, moveEvent.clientY)
+        return
+      }
       const dx = moveEvent.clientX - dragPointerState.startX
       const dy = moveEvent.clientY - dragPointerState.startY
-      if (!armed && Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
+      if (Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
         armed = true
-              beginPointerDrag(dragPointerState, moveEvent)
+        beginPointerDrag(dragPointerState, moveEvent)
       }
     }
-    const onUp = () => {
+    const isOurPointer = event_ => event_.pointerId === dragPointerState.pointerId
+    const onUp = upEvent => {
+      if (!isOurPointer(upEvent)) return
+      endPointerDrag(dragPointerState, upEvent, armed)
+    }
+    const onCancel = cancelEvent => {
+      if (cancelEvent.pointerId !== undefined && !isOurPointer(cancelEvent)) return
+      endPointerDrag(dragPointerState, null, false)
+    }
+    const onKey = keyEvent => {
+      if (keyEvent.key === 'Escape') endPointerDrag(dragPointerState, null, false)
+    }
+    const onBlur = () => endPointerDrag(dragPointerState, null, false)
+    const detach = () => {
       window.removeEventListener('pointermove', onMove, true)
       window.removeEventListener('pointerup', onUp, true)
-      dragPointerState.cleanup = null
-      if (!armed) {
-        dragPointerState.task = null
-        dragPointerState.pointerId = null
-      }
+      window.removeEventListener('pointercancel', onCancel, true)
+      window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('blur', onBlur, true)
     }
     window.addEventListener('pointermove', onMove, true)
     window.addEventListener('pointerup', onUp, true)
-    dragPointerState.cleanup = () => {
-      window.removeEventListener('pointermove', onMove, true)
-      window.removeEventListener('pointerup', onUp, true)
-    }
+    window.addEventListener('pointercancel', onCancel, true)
+    window.addEventListener('keydown', onKey, true)
+    window.addEventListener('blur', onBlur, true)
+    dragPointerState.cleanup = detach
   }
 
   return jsxs('div', {
@@ -1943,7 +1983,6 @@ function useDragActive() {
 
 function updateDropIndicator(x, y) {
   const target = resolveDropTarget(x, y)
-  if (!dropContext.indicator) return
   if (!target) {
     clearDropIndicator()
     return
@@ -2132,6 +2171,17 @@ function TodoPane({ ctx }) {
       setWorkingId(task.id)
       let createdSession = null
       let linked = false
+      // A failed session.close or completeSession leaves real state behind, so
+      // report it instead of implying the board link and host session are closed.
+      const cleanupFailures = []
+      const closeCreatedSession = async () => {
+        if (!createdSession?.session_id) return
+        try {
+          await host.request('session.close', { session_id: createdSession.session_id })
+        } catch (closeError) {
+          cleanupFailures.push(closeError)
+        }
+      }
       try {
         const params = {
           cols: 96,
@@ -2151,17 +2201,23 @@ function TodoPane({ ctx }) {
         }
         linked = await remote.linkSession(task.id, createdSession.stored_session_id)
         if (!linked) {
-          await host.request('session.close', { session_id: createdSession.session_id }).catch(() => undefined)
+          await closeCreatedSession()
+          reportCleanupFailures(cleanupFailures, 'the session could not be closed')
           return
         }
         await host.request('prompt.submit', { session_id: createdSession.session_id, text: buildWorkPrompt({ ...task, plan: 'now', inbox: false, sessionId: createdSession.stored_session_id, sessionState: 'active' }) })
         host.navigate(`/${encodeURIComponent(createdSession.stored_session_id)}`)
       } catch (error) {
-        if (createdSession?.session_id) {
-          await host.request('session.close', { session_id: createdSession.session_id }).catch(() => undefined)
+        await closeCreatedSession()
+        if (linked) {
+          try {
+            await remote.completeSession(task.id)
+          } catch (completeError) {
+            cleanupFailures.push(completeError)
+          }
         }
-        if (linked) await remote.completeSession(task.id)
         host.notifyError(error, 'Could not send this task to Hermes')
+        reportCleanupFailures(cleanupFailures, 'the task is still linked to a Hermes session')
       } finally {
         workPending.current.delete(task.id)
         setWorkingId(null)
