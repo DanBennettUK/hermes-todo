@@ -20,16 +20,21 @@ from hermes_todo_store import (
     RevisionConflict,
     complete_task_session,
     complete_with_follow_up,
+    create_subtask,
     create_task,
+    delete_subtask,
     generate_next_occurrence,
     get_agenda,
     get_board,
     get_history,
     import_tasks,
     link_task_session,
+    reorder_subtask,
     resolve_db_path,
     reorder_task,
     search_tasks,
+    sort_subtasks,
+    update_subtask,
     update_task,
 )
 
@@ -109,7 +114,7 @@ class HermesTodoStoreTests(unittest.TestCase):
     def test_migrates_v2_without_losing_tasks_or_revision(self) -> None:
         self._create_v2_database()
         board = get_board()
-        self.assertEqual(board["version"], 6)
+        self.assertEqual(board["version"], 7)
         self.assertEqual(board["revision"], 7)
         self.assertEqual(len(board["tasks"]), 3)
         by_id = {task["id"]: task for task in board["tasks"]}
@@ -122,7 +127,7 @@ class HermesTodoStoreTests(unittest.TestCase):
         self.assertIsNotNone(by_id["n"].get("position"))
         conn = sqlite3.connect(resolve_db_path())
         try:
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 6)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 7)
         finally:
             conn.close()
 
@@ -788,7 +793,13 @@ class HermesTodoStoreTests(unittest.TestCase):
         self.assertEqual(repeated["revision"], revision)
         with self.assertRaisesRegex(BoardError, "active linked session"):
             link_task_session(task["id"], "stored-session-2")
-        finished = complete_task_session(task["id"], expected_revision=revision)
+        replaced = link_task_session(
+            task["id"], "stored-session-2", replace_active=True, expected_revision=revision
+        )
+        self.assertEqual(replaced["task"]["sessionId"], "stored-session-2")
+        self.assertEqual(replaced["task"]["sessionState"], "active")
+        self.assertGreater(replaced["revision"], revision)
+        finished = complete_task_session(task["id"], expected_revision=replaced["revision"])
         self.assertEqual(finished["task"]["sessionState"], "completed")
 
         blocked = create_task("Blocked work", status="blocked", blocker="Need approval")["tasks"][-1]
@@ -911,6 +922,76 @@ class HermesTodoStoreTests(unittest.TestCase):
         result = search_tasks("concurrency", owner="dan")
         self.assertEqual(result["total"], 1)
         self.assertNotIn("sourcePayload", result["tasks"][0])
+
+    def test_subtasks_are_checklists_with_incomplete_first_sort(self) -> None:
+        task = create_task("Ship plugin", return_board=False)["task"]
+        first = create_subtask(task["id"], "Write store", return_board=False)
+        second = create_subtask(task["id"], "Write UI", return_board=False)
+        third = create_subtask(task["id"], "Write tests", return_board=False)
+        self.assertEqual(
+            [item["title"] for item in first["task"]["subtasks"]],
+            ["Write store"],
+        )
+        self.assertEqual(second["task"]["subtaskCount"], 2)
+        updated = update_subtask(task["id"], second["subtask"]["id"], done=True, return_board=False)
+        self.assertTrue(updated["task"]["subtasks"][1]["done"])
+        sorted_board = sort_subtasks(task["id"], return_board=False)
+        titles = [item["title"] for item in sorted_board["task"]["subtasks"]]
+        self.assertEqual(titles[-1], "Write UI")
+        self.assertEqual([item["done"] for item in sorted_board["task"]["subtasks"]], [False, False, True])
+        reordered = reorder_subtask(
+            task["id"],
+            third["subtask"]["id"],
+            before_id=first["subtask"]["id"],
+            return_board=False,
+        )
+        self.assertEqual(reordered["task"]["subtasks"][0]["title"], "Write tests")
+        deleted = delete_subtask(task["id"], first["subtask"]["id"], return_board=False)
+        self.assertEqual(deleted["task"]["subtaskCount"], 2)
+        found = search_tasks("Write tests")
+        self.assertEqual(found["total"], 1)
+        self.assertEqual(found["tasks"][0]["id"], task["id"])
+
+    def test_generated_occurrence_returns_copied_open_subtasks(self) -> None:
+        created = create_task(
+            "Recurring checklist",
+            due_date="2026-08-31",
+            recurrence_rule="monthly",
+            return_board=False,
+        )["task"]
+        create_subtask(created["id"], "Open item", return_board=False)
+        done_item = create_subtask(created["id"], "Done item", return_board=False)
+        update_subtask(created["id"], done_item["subtask"]["id"], done=True, return_board=False)
+        completed = update_task(created["id"], {"status": "done"}, return_board=False)
+        generated = completed["generatedTask"]
+        self.assertEqual(generated["subtaskCount"], 1)
+        self.assertEqual(generated["subtasks"][0]["title"], "Open item")
+        self.assertFalse(generated["subtasks"][0]["done"])
+
+    def test_import_preserves_subtasks(self) -> None:
+        imported = import_tasks(
+            [{
+                "id": "imported-with-subs",
+                "title": "Imported parent",
+                "subtasks": [
+                    {"title": "First", "done": False},
+                    {"title": "Second", "done": True},
+                ],
+            }],
+            return_board=False,
+        )
+        task = imported["tasks"][0]
+        self.assertEqual(task["subtaskCount"], 2)
+        self.assertEqual([item["title"] for item in task["subtasks"]], ["First", "Second"])
+        self.assertEqual([item["done"] for item in task["subtasks"]], [False, True])
+        conn = sqlite3.connect(resolve_db_path())
+        try:
+            payload = conn.execute(
+                "SELECT source_payload FROM tasks WHERE id = 'imported-with-subs'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertIsNone(payload)
 
 
 if __name__ == "__main__":
