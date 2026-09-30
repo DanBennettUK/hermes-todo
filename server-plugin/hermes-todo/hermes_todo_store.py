@@ -1764,11 +1764,22 @@ def _subtask_insert_bounds(
     before: sqlite3.Row | None,
     after: sqlite3.Row | None,
 ) -> tuple[float, float]:
+    if any(neighbour is not None and neighbour["id"] == subtask_id for neighbour in (before, after)):
+        raise BoardError("A subtask cannot be its own drop neighbour")
+    if before is not None and after is not None:
+        neighbours = conn.execute(
+            "SELECT id FROM subtasks WHERE task_id = ? AND id <> ? ORDER BY position, id",
+            (task_id, subtask_id),
+        ).fetchall()
+        ids = [row["id"] for row in neighbours]
+        if ids.index(before["id"]) != ids.index(after["id"]) + 1:
+            raise BoardError("Before and after subtasks must be distinct, ordered adjacent neighbours")
+        return float(after["position"]), float(before["position"])
     if before is not None:
         upper = float(before["position"])
         row = conn.execute(
             "SELECT MAX(position) FROM subtasks WHERE task_id = ? AND position < ? AND id <> ?",
-            (task_id, upper, before["id"]),
+            (task_id, upper, subtask_id),
         ).fetchone()
         lower = float(row[0]) if row and row[0] is not None else upper - SUBTASK_POSITION_STEP
         return lower, upper
@@ -1776,7 +1787,7 @@ def _subtask_insert_bounds(
         lower = float(after["position"])
         row = conn.execute(
             "SELECT MIN(position) FROM subtasks WHERE task_id = ? AND position > ? AND id <> ?",
-            (task_id, lower, after["id"]),
+            (task_id, lower, subtask_id),
         ).fetchone()
         upper = float(row[0]) if row and row[0] is not None else lower + SUBTASK_POSITION_STEP
         return lower, upper
@@ -1994,7 +2005,10 @@ def reorder_subtask(
                 raise BoardError(f"Unknown after subtask: {after_id}")
         lower, upper = _subtask_insert_bounds(conn, task_id, subtask_id, before, after)
         new_position = (lower + upper) / 2.0
-        if not POSITION_MIN < new_position < POSITION_MAX or new_position == float(existing["position"]):
+        # The midpoint must be strictly inside the destination gap. Comparing it
+        # with the moving subtask's own old position misses saturation: two
+        # neighbours one ULP apart round the midpoint back onto the lower bound.
+        if not POSITION_MIN < new_position < POSITION_MAX or new_position == lower or new_position == upper:
             _rebalance_subtasks(conn, task_id)
             if before is not None:
                 before = conn.execute(
@@ -2009,6 +2023,15 @@ def reorder_subtask(
             ).fetchone()
             lower, upper = _subtask_insert_bounds(conn, task_id, subtask_id, before, after)
             new_position = (lower + upper) / 2.0
+            if new_position == lower or new_position == upper:
+                raise BoardError("Could not find a unique subtask position between the drop neighbours")
+        # A tie with any sibling would silently corrupt the ordering, so refuse it.
+        clash = conn.execute(
+            "SELECT id FROM subtasks WHERE task_id = ? AND id <> ? AND position = ?",
+            (task_id, subtask_id, new_position),
+        ).fetchone()
+        if clash is not None:
+            raise BoardError("Could not find a unique subtask position between the drop neighbours")
         now = _utc_now()
         conn.execute(
             "UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ?",
