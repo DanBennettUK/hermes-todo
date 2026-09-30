@@ -63,7 +63,7 @@ class HermesTodoDesktopContractTests(unittest.TestCase):
         self.assertIn("const initialDraftRef = useRef(null)", source)
         self.assertIn("changedTaskDetails(initialDraftRef.current, currentDraft", source)
         self.assertIn("Object.keys(changes).length === 0", source)
-        self.assertIn("await update(task.id, changes, openedRevisionRef.current)", source)
+        self.assertIn("await update(task.id, pendingChanges, openedRevisionRef.current)", source)
         self.assertIn("openedRevisionRef = useRef(boardRevision)", source)
         self.assertIn("if (deletedRef.current) return true", source)
         self.assertIn("if (!deletedRef.current) void flushSave()", source)

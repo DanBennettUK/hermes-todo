@@ -592,8 +592,8 @@ function useRemoteBoard(ctx) {
           body: { ...changes, expectedRevision: revision, eventSource: 'desktop' },
           timeoutMs: 8000
         })
-        const next = commitMutation(remote)
-        return { ok: true, revision: Number(next?.revision ?? remote?.revision) }
+        commitMutation(remote)
+        return { ok: true, revision: Number(remote?.revision) }
       } catch (error) {
         if (boardRef.current === optimistic) {
           boardRef.current = snapshot
@@ -1099,6 +1099,8 @@ function changedTaskDetails(initial, current) {
 function SubtaskEditor({ task, disabled, addSubtask, updateSubtask, removeSubtask, reorderSubtask }) {
   const [draft, setDraft] = useState('')
   const items = task.subtasks || []
+  const dragCleanupRef = useRef(null)
+  useEffect(() => () => { dragCleanupRef.current?.() }, [task.id])
 
   const addItem = async () => {
     const title = draft.trim()
@@ -1108,16 +1110,21 @@ function SubtaskEditor({ task, disabled, addSubtask, updateSubtask, removeSubtas
   }
 
   const startReorder = (item, event) => {
-    if (event.button !== 0) return
+    if (event.button !== 0 || disabled) return
     event.preventDefault()
     event.stopPropagation()
+    dragCleanupRef.current?.()
+    const pointerId = event.pointerId
     const startY = event.clientY
+    let moved = false
     const onMove = moveEvent => {
-      if (Math.abs(moveEvent.clientY - startY) < SUBTASK_DRAG_THRESHOLD_PX) return
+      if (moveEvent.pointerId !== pointerId) return
+      if (Math.abs(moveEvent.clientY - startY) >= SUBTASK_DRAG_THRESHOLD_PX) moved = true
     }
     const onUp = upEvent => {
-      window.removeEventListener('pointermove', onMove, true)
-      window.removeEventListener('pointerup', onUp, true)
+      if (upEvent.pointerId !== pointerId) return
+      cleanup()
+      if (!moved) return
       const row = document.elementFromPoint(upEvent.clientX, upEvent.clientY)?.closest('[data-subtask-id]')
       const targetId = row?.getAttribute('data-subtask-id')
       if (!targetId || targetId === item.id) return
@@ -1125,20 +1132,35 @@ function SubtaskEditor({ task, disabled, addSubtask, updateSubtask, removeSubtas
       if (targetIndex < 0) return
       const beforeId = items[targetIndex].id
       if (upEvent.clientY < (row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2)) {
-        void reorderSubtask(task.id, item.id, { beforeId, afterId: targetIndex > 0 ? items[targetIndex - 1].id : null })
+        void reorderSubtask(task.id, item.id, { beforeId })
       } else {
-        const next = items[targetIndex + 1]
-        void reorderSubtask(task.id, item.id, { afterId: beforeId, beforeId: next ? next.id : null })
+        void reorderSubtask(task.id, item.id, { afterId: beforeId })
       }
+    }
+    const onCancel = cancelEvent => {
+      if (cancelEvent.pointerId === undefined || cancelEvent.pointerId === pointerId) cleanup()
+    }
+    const onKey = keyEvent => { if (keyEvent.key === 'Escape') cleanup() }
+    const cleanup = () => {
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onUp, true)
+      window.removeEventListener('pointercancel', onCancel, true)
+      window.removeEventListener('blur', onCancel, true)
+      window.removeEventListener('keydown', onKey, true)
+      dragCleanupRef.current = null
     }
     window.addEventListener('pointermove', onMove, true)
     window.addEventListener('pointerup', onUp, true)
+    window.addEventListener('pointercancel', onCancel, true)
+    window.addEventListener('blur', onCancel, true)
+    window.addEventListener('keydown', onKey, true)
+    dragCleanupRef.current = cleanup
   }
 
   return jsxs('div', {
     className: 'mt-1',
     children: [
-      items.map(item => jsxs('div', {
+      items.map((item, index) => jsxs('div', {
         'data-subtask-id': item.id,
         className: 'mb-1 flex items-center gap-1',
         children: [
@@ -1150,6 +1172,8 @@ function SubtaskEditor({ task, disabled, addSubtask, updateSubtask, removeSubtas
             type: 'button',
             children: '::'
           }),
+          jsx(IconButton, { disabled: disabled || index === 0, icon: icons.ArrowUp, label: `Move subtask ${item.title} earlier`, onClick: () => void reorderSubtask(task.id, item.id, { beforeId: items[index - 1].id }) }),
+          jsx(IconButton, { disabled: disabled || index === items.length - 1, icon: icons.ArrowDown, label: `Move subtask ${item.title} later`, onClick: () => void reorderSubtask(task.id, item.id, { afterId: items[index + 1].id }) }),
           jsx('input', {
             'aria-label': item.done ? 'Mark subtask incomplete' : 'Mark subtask complete',
             checked: item.done,
@@ -1214,7 +1238,7 @@ function SubtaskEditor({ task, disabled, addSubtask, updateSubtask, removeSubtas
   })
 }
 
-function TaskDetails({ ctx, task, disabled, update, remove, close, completeSession, addSubtask, updateSubtask, removeSubtask, reorderSubtask, boardRevision }) {
+function TaskDetails({ ctx, task, disabled, update, remove, close, closeRequestRef, completeSession, addSubtask, updateSubtask, removeSubtask, reorderSubtask, boardRevision }) {
   const activeProfile = useValue(host.state.profile)
   const initialDraftRef = useRef(null)
   if (initialDraftRef.current === null) {
@@ -1291,12 +1315,20 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
     const changes = changedTaskDetails(initialDraftRef.current, snapshot)
     if (Object.keys(changes).length === 0) return true
     const run = (async () => {
-      const saved = await update(task.id, changes, openedRevisionRef.current)
-      if (!saved) return false
-      // Advance the editor baseline only on our own acknowledged write. Board
-      // polling must never move this, or a later external edit is silently lost.
-      if (Number.isInteger(saved.revision)) openedRevisionRef.current = saved.revision
-      initialDraftRef.current = { ...snapshot, title }
+      let pendingSnapshot = snapshot
+      let pendingChanges = changes
+      while (!deletedRef.current) {
+        const saved = await update(task.id, pendingChanges, openedRevisionRef.current)
+        if (!saved) return false
+        // Use this write's revision, never a newer polled board revision.
+        if (Number.isInteger(saved.revision)) openedRevisionRef.current = saved.revision
+        initialDraftRef.current = { ...pendingSnapshot, title: pendingSnapshot.title.trim() }
+        if (deletedRef.current) return true
+        pendingSnapshot = currentDraftRef.current
+        if (!pendingSnapshot.title.trim()) return false
+        pendingChanges = changedTaskDetails(initialDraftRef.current, pendingSnapshot)
+        if (Object.keys(pendingChanges).length === 0) return true
+      }
       return true
     })()
     savingRef.current = run
@@ -1318,6 +1350,15 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
   })
 
   useEffect(() => () => { if (!deletedRef.current) void flushSave() }, [flushSave])
+
+  const closeEditor = useCallback(async () => {
+    if (await flushSave()) close()
+  }, [flushSave, close])
+  useEffect(() => {
+    if (!closeRequestRef) return undefined
+    closeRequestRef.current = closeEditor
+    return () => { closeRequestRef.current = null }
+  }, [closeEditor, closeRequestRef])
 
   const saveDetails = async event => {
     event.preventDefault()
@@ -1551,7 +1592,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
     className: 'mt-2 rounded-md border border-(--ui-stroke-secondary) p-2',
     onSubmit: event => void saveDetails(event),
     onKeyDown: event => {
-      if (event.key === 'Escape') close()
+      if (event.key === 'Escape') void closeEditor()
     },
     children: [
       jsxs('div', {
@@ -1600,7 +1641,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
             variant: 'text',
             children: confirmDelete ? 'Confirm delete' : 'Delete'
           }),
-          jsx(Button, { disabled, onClick: close, size: 'xs', type: 'button', variant: 'text', children: 'Cancel' })
+          jsx(Button, { disabled, onClick: () => void closeEditor(), size: 'xs', type: 'button', variant: 'text', children: 'Cancel' })
         ]
       })
     ]
@@ -1628,11 +1669,12 @@ function PriorityPill({ priority }) {
   })
 }
 
-function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pending, workingId, workWithHermes, addSubtask, updateSubtask, removeSubtask, reorderSubtask, prominent = false, reason, boardRevision }) {
+function TaskRow({ ctx, task, update, reorder, categoryTasks = [], remove, completeSession, cycleEstimate, pending, workingId, workWithHermes, addSubtask, updateSubtask, removeSubtask, reorderSubtask, prominent = false, reason, boardRevision }) {
   const [editing, setEditing] = useState(false)
   const [subtasksOpen, setSubtasksOpen] = useState(false)
   const [confirmComplete, setConfirmComplete] = useState(false)
   const confirmTimerRef = useRef(null)
+  const closeRequestRef = useRef(null)
   const disabled = pending || workingId === task.id
 
   const clearConfirmComplete = useCallback(() => {
@@ -1666,6 +1708,17 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
   }, [clearConfirmComplete, confirmComplete, task.id])
   const due = dueLabel(task)
   const draggable = task.status !== 'done'
+  const categoryIndex = categoryTasks.findIndex(item => item.id === task.id)
+  const canReorder = typeof reorder === 'function' && CATEGORY_SET.has(sectionFor(task))
+  const moveTask = async direction => {
+    const neighbour = categoryTasks[categoryIndex + direction]
+    if (!neighbour || disabled) return
+    const saved = await reorder(task.id, {
+      category: task.category,
+      ...(direction < 0 ? { beforeId: neighbour.id } : { afterId: neighbour.id })
+    })
+    if (saved) host.notify({ kind: 'info', message: `${task.title} moved ${direction < 0 ? 'earlier' : 'later'}.` })
+  }
   const canStartNow = task.status === 'open' && (task.plan !== 'now' || task.inbox)
   const canWorkWithHermes = task.status === 'open' || (task.sessionId && task.sessionState === 'active')
   const waitHint = ['waiting', 'blocked'].includes(task.status) && !(task.sessionId && task.sessionState === 'active')
@@ -1773,8 +1826,10 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
                     expanded: editing,
                     icon: icons.MoreHorizontal,
                     label: 'Plan, status and due date',
-                    onClick: () => setEditing(value => !value)
+                    onClick: () => { if (editing) void closeRequestRef.current?.(); else setEditing(true) }
                   }),
+                  canReorder && jsx(IconButton, { disabled: disabled || categoryIndex <= 0, icon: icons.ArrowUp, label: 'Move task earlier', onClick: () => void moveTask(-1) }),
+                  canReorder && jsx(IconButton, { disabled: disabled || categoryIndex < 0 || categoryIndex >= categoryTasks.length - 1, icon: icons.ArrowDown, label: 'Move task later', onClick: () => void moveTask(1) }),
                   task.status === 'done'
                     ? jsx(IconButton, { disabled, icon: icons.RefreshCw, label: 'Reopen', onClick: () => void update(task.id, { status: 'open', waitingOn: null, reviewDate: null, blocker: null }) })
                     : jsx('span', {
@@ -1916,6 +1971,7 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
         ]
       }),
       editing && jsx(TaskDetails, {
+        closeRequestRef,
         addSubtask,
         boardRevision,
         close: () => setEditing(false),
@@ -2047,7 +2103,7 @@ function DropCategorySection({ categoryId, rowProps, pendingIds, tasks }) {
         ? tasks.map((task, index) => jsxs('div', {
             'data-todo-task': task.id,
             children: [
-              jsx(TaskRow, { ...rowProps, pending: pendingIds.has(task.id), task }, task.id),
+              jsx(TaskRow, { ...rowProps, categoryTasks: tasks, pending: pendingIds.has(task.id), task }, task.id),
               dropLine(index + 1)
             ]
           }, task.id))
