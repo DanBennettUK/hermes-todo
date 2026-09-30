@@ -11,6 +11,7 @@ from pathlib import Path
 
 from cli import register_cli
 import hermes_todo_store as store
+from test_store import skip_without_tzdata
 
 
 class HermesTodoCliTests(unittest.TestCase):
@@ -90,6 +91,7 @@ class HermesTodoCliTests(unittest.TestCase):
         self.assertIsNone(cleared["task"]["dueAt"])
 
     def test_capture_start_here_show_search_and_history(self) -> None:
+        skip_without_tzdata(self)
         code, captured = self.run_cli(
             [
                 "capture",
@@ -145,6 +147,7 @@ class HermesTodoCliTests(unittest.TestCase):
         self.assertEqual(compact["task"]["title"], "Compact result")
 
     def test_board_envelope_keeps_recurrence_and_follow_up_results(self) -> None:
+        skip_without_tzdata(self)
         _, recurring = self.run_cli(
             [
                 "add",
@@ -209,6 +212,7 @@ class HermesTodoCliTests(unittest.TestCase):
         self.assertEqual(cleared["task"]["closureEvidence"], [])
 
     def test_empty_board_read_contracts_are_stable(self) -> None:
+        skip_without_tzdata(self)
         _, listed = self.run_cli(["list"])
         self.assertEqual((listed["total"], listed["tasks"]), (0, []))
         _, agenda = self.run_cli(["agenda", "--date", "2026-08-09"])

@@ -129,6 +129,64 @@ class HermesTodoBoardToolTests(unittest.TestCase):
             ["tests/test_todo_tool.py", "README.md"],
         )
 
+    def test_done_returns_saved_closure_note_and_evidence(self) -> None:
+        created = self._call(action="create", title="Close with proof")
+        task_id = created["task"]["id"]
+
+        done = self._call(
+            action="done",
+            task_id=task_id,
+            closure_note="Merged after green CI",
+            evidence=["tests/test_todo_tool.py"],
+        )
+        self.assertTrue(done["ok"])
+        self.assertEqual(done["task"]["closureNote"], "Merged after green CI")
+        self.assertEqual(done["task"]["closureEvidence"], ["tests/test_todo_tool.py"])
+
+        fetched = self._call(action="get", task_id=task_id)
+        self.assertTrue(fetched["ok"])
+        self.assertEqual(fetched["task"]["closureNote"], "Merged after green CI")
+        self.assertEqual(fetched["task"]["closureEvidence"], ["tests/test_todo_tool.py"])
+
+    def test_done_requires_recorded_closure_for_a_closure_condition(self) -> None:
+        created = self._call(
+            action="create",
+            title="Needs proof",
+            closure_condition="The focused test passes on Windows and Linux",
+        )
+        task_id = created["task"]["id"]
+        before = get_board()["revision"]
+
+        bare = self._call(action="done", task_id=task_id)
+        self.assertFalse(bare["ok"])
+        self.assertEqual(bare["error"], "invalid_request")
+        self.assertIn("closure_note", bare["message"])
+
+        note_only = self._call(action="done", task_id=task_id, closure_note="Ran it")
+        self.assertFalse(note_only["ok"])
+        self.assertEqual(note_only["error"], "invalid_request")
+        self.assertIn("evidence", note_only["message"])
+
+        self.assertEqual(get_board()["revision"], before, "rejection must not write")
+        task = self._call(action="get", task_id=task_id)["task"]
+        self.assertEqual(task["status"], "open")
+        self.assertNotIn("closureNote", task)
+
+        accepted = self._call(
+            action="done",
+            task_id=task_id,
+            closure_note="Ran the focused suite on both platforms",
+            evidence=["tests/test_todo_tool.py"],
+        )
+        self.assertTrue(accepted["ok"])
+        self.assertEqual(accepted["task"]["status"], "done")
+
+    def test_done_without_closure_condition_stays_permissive(self) -> None:
+        created = self._call(action="create", title="No policy")
+        done = self._call(action="done", task_id=created["task"]["id"])
+        self.assertTrue(done["ok"])
+        self.assertEqual(done["task"]["status"], "done")
+
 
 if __name__ == "__main__":
     unittest.main()

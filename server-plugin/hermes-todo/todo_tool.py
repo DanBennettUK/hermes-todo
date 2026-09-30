@@ -115,8 +115,9 @@ def _compact_task(task: dict[str, Any]) -> dict[str, Any]:
     keys = (
         "id", "title", "plan", "status", "category", "position", "estimate",
         "priority", "dueDate", "dueAt", "project", "owner", "inbox",
-        "brief", "nextAction", "closureCondition", "waitingOn", "blocker",
-        "reviewDate", "artefacts", "sessionId", "sessionState", "subtaskCount", "subtaskDoneCount",
+        "brief", "nextAction", "closureCondition", "closureNote", "closureEvidence",
+        "waitingOn", "blocker", "reviewDate", "artefacts", "sessionId", "sessionState",
+        "subtaskCount", "subtaskDoneCount",
     )
     compact = {key: task.get(key) for key in keys if task.get(key) is not None}
     if task.get("subtasks"):
@@ -227,11 +228,28 @@ def _apply(args: dict[str, Any]) -> dict[str, Any]:
         result["task"] = _compact_task(result["task"])
         return result
     if action == "done":
+        current = get_task(args["task_id"])["task"]
+        note = args.get("closure_note")
+        evidence = args.get("evidence") or []
+        # A task that declares a closure condition must be closed with a recorded
+        # note, and evidence when the condition or task asks for it. The tool cannot
+        # prove a natural-language condition, so it requires the explicit record.
+        if current.get("closureCondition"):
+            if not isinstance(note, str) or not note.strip():
+                raise BoardError(
+                    "This task has a closure condition; pass closure_note describing "
+                    "what was delivered before completing it"
+                )
+            if not isinstance(evidence, list) or not [item for item in evidence if str(item).strip()]:
+                raise BoardError(
+                    "This task has a closure condition; pass evidence listing the "
+                    "verification before completing it"
+                )
         changes: dict[str, Any] = {"status": "done"}
-        if args.get("closure_note") is not None:
-            changes["closureNote"] = args["closure_note"]
-        if args.get("evidence") is not None:
-            changes["closureEvidence"] = args["evidence"]
+        if note is not None:
+            changes["closureNote"] = note
+        if evidence:
+            changes["closureEvidence"] = evidence
         result = update_task(
             args["task_id"],
             changes,

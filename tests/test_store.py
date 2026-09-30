@@ -953,6 +953,7 @@ class HermesTodoStoreTests(unittest.TestCase):
         self.assertEqual(found["tasks"][0]["id"], task["id"])
 
     def test_generated_occurrence_returns_copied_open_subtasks(self) -> None:
+        skip_without_tzdata(self)
         created = create_task(
             "Recurring checklist",
             due_date="2026-08-31",
