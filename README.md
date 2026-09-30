@@ -348,6 +348,14 @@ Imported `sourcePayload` metadata is retained only in the profile-local SQLite d
 
 No build step or third-party runtime dependency is required for the store/CLI. The API is loaded inside Hermes, which supplies FastAPI and Pydantic. Python's standard-library timezone database must contain the selected IANA recurrence/agenda timezone.
 
+To run the full suite, including the tests that exercise the real routes and the IANA timezone paths, install the test-only packages into the same interpreter:
+
+```bash
+python3 -m pip install tzdata fastapi pydantic httpx
+```
+
+Without them those tests skip rather than fail, so a green run can hide a missing dependency.
+
 ```bash
 PYTHONPATH=server-plugin/hermes-todo python3 -m unittest discover -s tests -v
 python3 -m compileall -q server-plugin tests
