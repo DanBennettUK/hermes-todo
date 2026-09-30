@@ -192,7 +192,7 @@ class HermesTodoDesktopContractTests(unittest.TestCase):
         end = source.index("function resolveDropTarget(")
         # endPointerDrag + beginPointerDrag + the row-level press handler.
         press_start = source.index("  const handlePointerDown = event => {")
-        press_end = source.index("  return jsxs('div', {", press_start)
+        press_end = source.index("  // A row can unmount mid-drag", press_start)
         harness = f"""
 {source[start:end]}
 {source[press_start:press_end]}
@@ -375,6 +375,11 @@ console.log(JSON.stringify({
         self.assertTrue(after["armed"])
         self.assertFalse(after["active"], "an Escape key event has no pointerId and must cancel")
         self.assertEqual(after["listenersLeft"], 0)
+
+    def test_unmount_teardown_disarms_a_drag_owned_by_that_row(self) -> None:
+        source = PLUGIN_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("dragPointerState.task?.id === task.id && dragPointerState.cleanup", source)
+        self.assertIn("endPointerDrag(dragPointerState, null, false)", source)
 
     def test_drop_indicator_resolves_a_line_on_the_first_move(self) -> None:
         source = PLUGIN_SOURCE.read_text(encoding="utf-8")

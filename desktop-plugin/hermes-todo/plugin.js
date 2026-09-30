@@ -1732,6 +1732,14 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
     dragPointerState.cleanup = detach
   }
 
+  // A row can unmount mid-drag (filter, poll reorder, task deleted elsewhere).
+  // Without this the listeners, ghost and userSelect would outlive the component.
+  useEffect(() => () => {
+    if (dragPointerState.task?.id === task.id && dragPointerState.cleanup) {
+      endPointerDrag(dragPointerState, null, false)
+    }
+  }, [task.id])
+
   return jsxs('div', {
     className: cn(
       'group w-full min-w-0 max-w-full overflow-hidden border-b border-(--ui-stroke-secondary) py-2 last:border-b-0',
