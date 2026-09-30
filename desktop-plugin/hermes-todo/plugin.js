@@ -579,9 +579,10 @@ function useRemoteBoard(ctx) {
   }, [])
 
   const update = useCallback(
-    (id, changes) => enqueue(async () => {
+    (id, changes, expectedRevision) => enqueue(async () => {
       await queryClient.cancelQueries({ queryKey })
       const snapshot = boardRef.current
+      const revision = Number.isInteger(expectedRevision) ? expectedRevision : snapshot.revision
       const optimistic = optimisticPatch(snapshot, id, changes)
       boardRef.current = optimistic
       queryClient.setQueryData(queryKey, optimistic)
@@ -589,7 +590,7 @@ function useRemoteBoard(ctx) {
       try {
         const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}?envelope=result`, {
           method: 'PATCH',
-          body: { ...changes, expectedRevision: snapshot.revision, eventSource: 'desktop' },
+          body: { ...changes, expectedRevision: revision, eventSource: 'desktop' },
           timeoutMs: 8000
         })
         commitMutation(remote)
@@ -1214,7 +1215,7 @@ function SubtaskEditor({ task, disabled, addSubtask, updateSubtask, removeSubtas
   })
 }
 
-function TaskDetails({ ctx, task, disabled, update, remove, close, completeSession, addSubtask, updateSubtask, removeSubtask, reorderSubtask }) {
+function TaskDetails({ ctx, task, disabled, update, remove, close, completeSession, addSubtask, updateSubtask, removeSubtask, reorderSubtask, boardRevision }) {
   const activeProfile = useValue(host.state.profile)
   const initialDraftRef = useRef(null)
   if (initialDraftRef.current === null) {
@@ -1278,13 +1279,17 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
   const currentDraftRef = useRef(currentDraft)
   currentDraftRef.current = currentDraft
 
+  const deletedRef = useRef(false)
+  const openedRevisionRef = useRef(boardRevision)
+
   const flushSave = useCallback(async () => {
+    if (deletedRef.current) return true
     const snapshot = currentDraftRef.current
     const title = snapshot.title.trim()
     if (!title) return false
     const changes = changedTaskDetails(initialDraftRef.current, snapshot)
     if (Object.keys(changes).length === 0) return true
-    const saved = await update(task.id, changes)
+    const saved = await update(task.id, changes, openedRevisionRef.current)
     if (saved) initialDraftRef.current = { ...snapshot, title }
     return saved
   }, [task.id, update])
@@ -1299,7 +1304,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
     return () => clearTimeout(timer)
   })
 
-  useEffect(() => () => { void flushSave() }, [flushSave])
+  useEffect(() => () => { if (!deletedRef.current) void flushSave() }, [flushSave])
 
   const saveDetails = async event => {
     event.preventDefault()
@@ -1567,7 +1572,10 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
                 setConfirmDelete(true)
                 return
               }
-              if (await remove(task.id)) close()
+              if (await remove(task.id)) {
+                deletedRef.current = true
+                close()
+              }
             },
             size: 'xs',
             type: 'button',
@@ -1602,7 +1610,7 @@ function PriorityPill({ priority }) {
   })
 }
 
-function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pending, workingId, workWithHermes, addSubtask, updateSubtask, removeSubtask, reorderSubtask, prominent = false, reason }) {
+function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pending, workingId, workWithHermes, addSubtask, updateSubtask, removeSubtask, reorderSubtask, prominent = false, reason, boardRevision }) {
   const [editing, setEditing] = useState(false)
   const [subtasksOpen, setSubtasksOpen] = useState(false)
   const [confirmComplete, setConfirmComplete] = useState(false)
@@ -1861,6 +1869,7 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
       }),
       editing && jsx(TaskDetails, {
         addSubtask,
+        boardRevision,
         close: () => setEditing(false),
         completeSession,
         ctx,
@@ -2169,6 +2178,7 @@ function TodoPane({ ctx }) {
 
   const rowProps = {
     addSubtask: remote.addSubtask,
+    boardRevision: remote.board.revision,
     completeSession: remote.completeSession,
     ctx,
     cycleEstimate: remote.cycleEstimate,

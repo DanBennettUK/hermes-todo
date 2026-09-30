@@ -116,7 +116,7 @@ def _compact_task(task: dict[str, Any]) -> dict[str, Any]:
         "id", "title", "plan", "status", "category", "position", "estimate",
         "priority", "dueDate", "dueAt", "project", "owner", "inbox",
         "brief", "nextAction", "closureCondition", "waitingOn", "blocker",
-        "reviewDate", "sessionId", "sessionState", "subtaskCount", "subtaskDoneCount",
+        "reviewDate", "artefacts", "sessionId", "sessionState", "subtaskCount", "subtaskDoneCount",
     )
     compact = {key: task.get(key) for key in keys if task.get(key) is not None}
     if task.get("subtasks"):
