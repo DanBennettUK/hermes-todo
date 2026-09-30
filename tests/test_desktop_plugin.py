@@ -48,7 +48,7 @@ class HermesTodoDesktopContractTests(unittest.TestCase):
         self.assertIn("const initialDraftRef = useRef(null)", source)
         self.assertIn("changedTaskDetails(initialDraftRef.current, currentDraft", source)
         self.assertIn("Object.keys(changes).length === 0", source)
-        self.assertIn("await update(task.id, changes)", source)
+        self.assertIn("await update(task.id, changes, openedRevisionRef.current)", source)
         self.assertIn("SegmentedControl", source)
         self.assertIn("icons.Save", source)
         self.assertIn("const DETAIL_TABS", source)
@@ -139,8 +139,11 @@ class HermesTodoDesktopContractTests(unittest.TestCase):
         )
         self.assertLess(
             source.index("if (!linked)"),
-            source.index("if (linked) await remote.completeSession(task.id)"),
+            source.index("if (linked) {"),
         )
+        # Cleanup must be reported, never swallowed by an empty catch.
+        self.assertNotIn("session.close', { session_id: createdSession.session_id }).catch", source)
+        self.assertIn("reportCleanupFailures(cleanupFailures", source)
 
     def test_due_helpers_use_task_timezone_with_a_safe_legacy_fallback(self) -> None:
         source = PLUGIN_SOURCE.read_text(encoding="utf-8")
@@ -353,6 +356,24 @@ console.log(JSON.stringify({
             "the first drag must be able to show an indicator",
         )
 
+
+
+    def test_editor_advances_its_revision_only_from_an_acknowledged_save(self) -> None:
+        source = PLUGIN_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn("openedRevisionRef.current = saved.revision", source)
+        self.assertIn("if (savingRef.current) return savingRef.current", source)
+        # The editor must not adopt the polled board revision.
+        self.assertNotIn("openedRevisionRef.current = boardRevision", source)
+
+    def test_delete_disarms_autosave_before_the_first_await(self) -> None:
+        source = PLUGIN_SOURCE.read_text(encoding="utf-8")
+
+        guard = source.index("deletedRef.current = true")
+        remove = source.index("if (await remove(task.id))", guard)
+        self.assertLess(guard, remove, "the delete guard must be set before awaiting the delete")
+        self.assertIn("deletedRef.current = false", source)
+        self.assertIn("if (!deletedRef.current) void flushSave()", source)
 
 
 if __name__ == "__main__":

@@ -571,8 +571,8 @@ function useRemoteBoard(ctx) {
           body: { ...changes, expectedRevision: snapshot.revision, eventSource: 'desktop' },
           timeoutMs: 8000
         })
-        commitMutation(remote)
-        return true
+        const next = commitMutation(remote)
+        return { ok: true, revision: Number(next?.revision ?? remote?.revision) }
       } catch (error) {
         if (boardRef.current === optimistic) {
           boardRef.current = snapshot
@@ -1038,15 +1038,33 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
   const currentDraftRef = useRef(currentDraft)
   currentDraftRef.current = currentDraft
 
+  const deletedRef = useRef(false)
+  const savingRef = useRef(null)
+  const openedRevisionRef = useRef(boardRevision)
+
   const flushSave = useCallback(async () => {
+    if (deletedRef.current) return true
+    if (savingRef.current) return savingRef.current
     const snapshot = currentDraftRef.current
     const title = snapshot.title.trim()
     if (!title) return false
     const changes = changedTaskDetails(initialDraftRef.current, snapshot)
     if (Object.keys(changes).length === 0) return true
-    const saved = await update(task.id, changes)
-    if (saved) initialDraftRef.current = { ...snapshot, title }
-    return saved
+    const run = (async () => {
+      const saved = await update(task.id, changes, openedRevisionRef.current)
+      if (!saved) return false
+      // Advance the editor baseline only on our own acknowledged write. Board
+      // polling must never move this, or a later external edit is silently lost.
+      if (Number.isInteger(saved.revision)) openedRevisionRef.current = saved.revision
+      initialDraftRef.current = { ...snapshot, title }
+      return true
+    })()
+    savingRef.current = run
+    try {
+      return await run
+    } finally {
+      if (savingRef.current === run) savingRef.current = null
+    }
   }, [task.id, update])
 
   useEffect(() => {
@@ -1059,7 +1077,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
     return () => clearTimeout(timer)
   })
 
-  useEffect(() => () => { void flushSave() }, [flushSave])
+  useEffect(() => () => { if (!deletedRef.current) void flushSave() }, [flushSave])
 
   const saveDetails = async event => {
     event.preventDefault()
@@ -1277,7 +1295,15 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
               setConfirmDelete(true)
               return
             }
-            if (await remove(task.id)) close()
+            // Block the autosave timer and unmount flush before the first await,
+            // otherwise a dirty draft is PATCHed for a task being deleted.
+            deletedRef.current = true
+            if (savingRef.current) await savingRef.current.catch(() => false)
+            if (await remove(task.id)) {
+              close()
+              return
+            }
+            deletedRef.current = false
           },
           size: 'xs',
           type: 'button',
@@ -1755,6 +1781,17 @@ function TodoPane({ ctx }) {
       setWorkingId(task.id)
       let createdSession = null
       let linked = false
+      // A failed session.close or completeSession leaves real state behind, so
+      // report it instead of implying the board link and host session are closed.
+      const cleanupFailures = []
+      const closeCreatedSession = async () => {
+        if (!createdSession?.session_id) return
+        try {
+          await host.request('session.close', { session_id: createdSession.session_id })
+        } catch (closeError) {
+          cleanupFailures.push(closeError)
+        }
+      }
       try {
         const params = {
           cols: 96,
@@ -1774,17 +1811,23 @@ function TodoPane({ ctx }) {
         }
         linked = await remote.linkSession(task.id, createdSession.stored_session_id)
         if (!linked) {
-          await host.request('session.close', { session_id: createdSession.session_id }).catch(() => undefined)
+          await closeCreatedSession()
+          reportCleanupFailures(cleanupFailures, 'the session could not be closed')
           return
         }
         await host.request('prompt.submit', { session_id: createdSession.session_id, text: buildWorkPrompt({ ...task, plan: 'now', inbox: false, sessionId: createdSession.stored_session_id, sessionState: 'active' }) })
         host.navigate(`/${encodeURIComponent(createdSession.stored_session_id)}`)
       } catch (error) {
-        if (createdSession?.session_id) {
-          await host.request('session.close', { session_id: createdSession.session_id }).catch(() => undefined)
+        await closeCreatedSession()
+        if (linked) {
+          try {
+            await remote.completeSession(task.id)
+          } catch (completeError) {
+            cleanupFailures.push(completeError)
+          }
         }
-        if (linked) await remote.completeSession(task.id)
         host.notifyError(error, 'Could not send this task to Hermes')
+        reportCleanupFailures(cleanupFailures, 'the task is still linked to a Hermes session')
       } finally {
         workPending.current.delete(task.id)
         setWorkingId(null)
