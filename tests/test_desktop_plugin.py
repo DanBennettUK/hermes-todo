@@ -30,11 +30,26 @@ class HermesTodoDesktopContractTests(unittest.TestCase):
         self.assertIn("plan: 'later'", source)
         self.assertIn("inbox: true", source)
         self.assertIn("Capture to Inbox", source)
+        self.assertIn("Captured tasks wait here until you start or plan them.", source)
+        self.assertIn("Drop tasks here to park them.", source)
+        self.assertNotIn("jsx('br')", source)
         self.assertIn("Start now", source)
         self.assertIn("expectedRevision: snapshot.revision", source)
         self.assertIn("?envelope=result", source)
         self.assertIn("const aPriority = a.priority || 99", source)
+        self.assertIn("label: 'P4'", source)
+        self.assertIn("PRIORITY_PILL[task.priority]", source)
+        self.assertIn("const CONFIRM_COMPLETE_MS = 3000", source)
+        self.assertIn("icons.CheckCircle2", source)
+        self.assertIn("Confirm complete", source)
         self.assertIn("jsx(BoardView, { remote, rowProps, sections })", source)
+        self.assertIn("data-todo-due-row", source)
+        self.assertIn("prominent ? 'justify-start' : 'justify-between'", source)
+        self.assertIn("flex w-full items-center", source)
+        self.assertNotIn("basis-48", source)
+        self.assertIn("PALETTE_AREA", source)
+        self.assertIn("Show Todo", source)
+        self.assertIn("host.openWorkspace", source)
         self.assertNotIn("loadAgenda", source)
         self.assertNotIn("agendaQuery", source)
         self.assertNotIn("Start Here", source)
@@ -49,11 +64,26 @@ class HermesTodoDesktopContractTests(unittest.TestCase):
         self.assertIn("changedTaskDetails(initialDraftRef.current, currentDraft", source)
         self.assertIn("Object.keys(changes).length === 0", source)
         self.assertIn("await update(task.id, changes, openedRevisionRef.current)", source)
+        self.assertIn("openedRevisionRef = useRef(boardRevision)", source)
+        self.assertIn("if (deletedRef.current) return true", source)
+        self.assertIn("if (!deletedRef.current) void flushSave()", source)
+        self.assertIn("deletedRef.current = true", source)
+        self.assertIn("expectedRevision: revision", source)
         self.assertIn("SegmentedControl", source)
         self.assertIn("icons.Save", source)
         self.assertIn("const DETAIL_TABS", source)
+        self.assertLess(source.index("...tabFields"), source.index("children: 'Cancel'"))
+        self.assertIn("Confirm delete", source)
+        self.assertIn("id: 'subs'", source)
+        self.assertIn("function SubtaskEditor", source)
+        self.assertIn("task.subtaskCount > 0", source)
+        self.assertIn("data-todo-card-subtask", source)
+        self.assertIn("done: !item.done", source)
+        self.assertNotIn("paddingLeft: 4", source)
         self.assertIn("'due-row'", source)
         self.assertIn("'aria-label': 'Due date'", source)
+        self.assertIn("function DimInput", source)
+        self.assertIn("DIM_FIELD_BORDER", source)
         self.assertIn("initial.dueMode !== current.dueMode", source)
         self.assertIn("artefacts: lines(artefactsDraft)", source)
         self.assertIn("closureEvidence: lines(closureEvidenceDraft)", source)
@@ -154,7 +184,6 @@ class HermesTodoDesktopContractTests(unittest.TestCase):
         self.assertIn("const taskTimeZone = safeTimeZone(task.dueTimezone)", source)
         self.assertIn("dueAt: localDateTimeValue(task.dueAt, task.dueTimezone)", source)
         self.assertIn("timeZone: taskTimeZone", source)
-
 
     def _run_drag_probe(self, body: str) -> str:
         """Execute the real drag lifecycle from plugin.js in Node with DOM stubs."""
@@ -356,8 +385,6 @@ console.log(JSON.stringify({
             "the first drag must be able to show an indicator",
         )
 
-
-
     def test_editor_advances_its_revision_only_from_an_acknowledged_save(self) -> None:
         source = PLUGIN_SOURCE.read_text(encoding="utf-8")
 
@@ -373,7 +400,6 @@ console.log(JSON.stringify({
         remove = source.index("if (await remove(task.id))", guard)
         self.assertLess(guard, remove, "the delete guard must be set before awaiting the delete")
         self.assertIn("deletedRef.current = false", source)
-        self.assertIn("if (!deletedRef.current) void flushSave()", source)
 
 
 if __name__ == "__main__":

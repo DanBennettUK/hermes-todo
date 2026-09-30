@@ -3,6 +3,7 @@ import {
   EmptyState,
   Input,
   SegmentedControl,
+  PALETTE_AREA,
   Tip,
   cn,
   haptic,
@@ -35,11 +36,14 @@ const DETAIL_TABS = [
   { id: 'work', label: 'Work' },
   { id: 'plan', label: 'Plan' },
   { id: 'wait', label: 'Wait' },
+  { id: 'subs', label: 'Subs' },
   { id: 'more', label: 'More' }
 ]
 const AUTOSAVE_MS = 500
+const SUBTASK_DRAG_THRESHOLD_PX = 6
+const CONFIRM_COMPLETE_MS = 3000
 
-const emptyBoard = () => ({ version: 6, revision: 0, tasks: [] })
+const emptyBoard = () => ({ version: 7, revision: 0, tasks: [] })
 
 // Hermes Desktop evaluates disk plugins as one uncompiled ESM module loaded
 // from a blob URL. Keep this formatter inline: relative imports such as
@@ -70,6 +74,9 @@ function buildWorkPrompt(task) {
     `Execution mode: ${task.executionMode || 'manual'}`,
     `Approval state: ${task.approvalState || 'not-required'}`,
     task.artefacts?.length ? `Artefacts:\n${task.artefacts.map(value => `- ${value}`).join('\n')}` : null,
+    task.subtasks?.length
+      ? `Subtasks:\n${task.subtasks.map(item => `- [${item.done ? 'x' : ' '}] ${item.title}`).join('\n')}`
+      : null,
     task.source ? `Origin: ${task.source}${task.externalId ? ` (${task.externalId})` : ''}` : null
   ].filter(Boolean)
 
@@ -277,6 +284,19 @@ function normaliseTask(task) {
     occurrenceNumber: Number.isInteger(task.occurrenceNumber) ? task.occurrenceNumber : null,
     sessionId: typeof task.sessionId === 'string' && task.sessionId ? task.sessionId : null,
     sessionState: ['active', 'completed'].includes(task.sessionState) ? task.sessionState : null,
+    subtasks: Array.isArray(task.subtasks)
+      ? task.subtasks
+        .filter(item => item && typeof item === 'object' && typeof item.title === 'string')
+        .map(item => ({
+          id: typeof item.id === 'string' && item.id ? item.id : makeId(),
+          title: item.title.trim().slice(0, 500),
+          done: item.done === true
+        }))
+      : [],
+    subtaskCount: Number.isInteger(task.subtaskCount) ? task.subtaskCount : (Array.isArray(task.subtasks) ? task.subtasks.length : 0),
+    subtaskDoneCount: Number.isInteger(task.subtaskDoneCount)
+      ? task.subtaskDoneCount
+      : (Array.isArray(task.subtasks) ? task.subtasks.filter(item => item && item.done === true).length : 0),
     source: typeof task.source === 'string' && task.source ? task.source : null,
     externalId: typeof task.externalId === 'string' && task.externalId ? task.externalId : null,
     createdAt: task.createdAt ?? new Date().toISOString(),
@@ -298,7 +318,7 @@ function normaliseBoard(value) {
     keptNow = true
   }
   return {
-    version: Number(value.version) || 6,
+    version: Number(value.version) || 7,
     revision: Number(value.revision) || 0,
     tasks
   }
@@ -558,9 +578,10 @@ function useRemoteBoard(ctx) {
   }, [])
 
   const update = useCallback(
-    (id, changes) => enqueue(async () => {
+    (id, changes, expectedRevision) => enqueue(async () => {
       await queryClient.cancelQueries({ queryKey })
       const snapshot = boardRef.current
+      const revision = Number.isInteger(expectedRevision) ? expectedRevision : snapshot.revision
       const optimistic = optimisticPatch(snapshot, id, changes)
       boardRef.current = optimistic
       queryClient.setQueryData(queryKey, optimistic)
@@ -568,7 +589,7 @@ function useRemoteBoard(ctx) {
       try {
         const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}?envelope=result`, {
           method: 'PATCH',
-          body: { ...changes, expectedRevision: snapshot.revision, eventSource: 'desktop' },
+          body: { ...changes, expectedRevision: revision, eventSource: 'desktop' },
           timeoutMs: 8000
         })
         const next = commitMutation(remote)
@@ -761,20 +782,112 @@ function useRemoteBoard(ctx) {
     [commitMutation, ctx, enqueue, invalidateRelated]
   )
 
+  const addSubtask = useCallback(
+    (id, title) => enqueue(async () => {
+      const snapshot = boardRef.current
+      try {
+        const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}/subtasks?envelope=result`, {
+          method: 'POST',
+          body: { title, expectedRevision: snapshot.revision, eventSource: 'desktop' },
+          timeoutMs: 8000
+        })
+        commitMutation(remote)
+        return true
+      } catch (error) {
+        host.notifyError(error, 'Could not add the subtask')
+        return false
+      } finally {
+        invalidateRelated(id)
+      }
+    }),
+    [commitMutation, ctx, enqueue, invalidateRelated]
+  )
+
+  const updateSubtask = useCallback(
+    (id, subtaskId, changes) => enqueue(async () => {
+      const snapshot = boardRef.current
+      try {
+        const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}/subtasks/${encodeURIComponent(subtaskId)}?envelope=result`, {
+          method: 'PATCH',
+          body: { ...changes, expectedRevision: snapshot.revision, eventSource: 'desktop' },
+          timeoutMs: 8000
+        })
+        commitMutation(remote)
+        return true
+      } catch (error) {
+        host.notifyError(error, 'Could not update the subtask')
+        return false
+      } finally {
+        invalidateRelated(id)
+      }
+    }),
+    [commitMutation, ctx, enqueue, invalidateRelated]
+  )
+
+  const removeSubtask = useCallback(
+    (id, subtaskId) => enqueue(async () => {
+      const snapshot = boardRef.current
+      try {
+        const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}/subtasks/${encodeURIComponent(subtaskId)}?expectedRevision=${snapshot.revision}&envelope=result`, {
+          method: 'DELETE',
+          timeoutMs: 8000
+        })
+        commitMutation(remote)
+        return true
+      } catch (error) {
+        host.notifyError(error, 'Could not delete the subtask')
+        return false
+      } finally {
+        invalidateRelated(id)
+      }
+    }),
+    [commitMutation, ctx, enqueue, invalidateRelated]
+  )
+
+  const reorderSubtask = useCallback(
+    (id, subtaskId, target) => enqueue(async () => {
+      const snapshot = boardRef.current
+      try {
+        const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}/subtasks/${encodeURIComponent(subtaskId)}/reorder?envelope=result`, {
+          method: 'POST',
+          body: {
+            beforeId: target.beforeId || null,
+            afterId: target.afterId || null,
+            expectedRevision: snapshot.revision,
+            eventSource: 'desktop'
+          },
+          timeoutMs: 8000
+        })
+        commitMutation(remote)
+        return true
+      } catch (error) {
+        host.notifyError(error, 'Could not reorder the subtask')
+        return false
+      } finally {
+        invalidateRelated(id)
+      }
+    }),
+    [commitMutation, ctx, enqueue, invalidateRelated]
+  )
+
   return {
     add,
     adding,
+    addSubtask,
     board,
     completeSession,
     connection: query.isError ? 'offline' : query.data ? 'online' : 'connecting',
     cycleEstimate,
     reorder,
+    reorderSubtask,
     error: query.error ? errorText(query.error) : '',
     linkSession,
     pendingIds,
     refresh: () => query.refetch(),
     remove,
-    update
+    removeSubtask,
+    update,
+    updateSubtask
   }
 }
 
@@ -861,6 +974,15 @@ function ChoiceButton({ active, children, disabled, onClick }) {
     type: 'button',
     variant: active ? 'default' : 'secondary',
     children
+  })
+}
+
+const DIM_FIELD_BORDER = 'color-mix(in srgb, var(--ui-text-primary) 22%, transparent)'
+
+function DimInput(props) {
+  return jsx(Input, {
+    ...props,
+    style: { borderColor: DIM_FIELD_BORDER, ...(props.style || {}) }
   })
 }
 
@@ -974,7 +1096,125 @@ function changedTaskDetails(initial, current) {
   return changes
 }
 
-function TaskDetails({ ctx, task, disabled, update, remove, close, completeSession }) {
+function SubtaskEditor({ task, disabled, addSubtask, updateSubtask, removeSubtask, reorderSubtask }) {
+  const [draft, setDraft] = useState('')
+  const items = task.subtasks || []
+
+  const addItem = async () => {
+    const title = draft.trim()
+    if (!title) return
+    const saved = await addSubtask(task.id, title)
+    if (saved) setDraft('')
+  }
+
+  const startReorder = (item, event) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    const startY = event.clientY
+    const onMove = moveEvent => {
+      if (Math.abs(moveEvent.clientY - startY) < SUBTASK_DRAG_THRESHOLD_PX) return
+    }
+    const onUp = upEvent => {
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onUp, true)
+      const row = document.elementFromPoint(upEvent.clientX, upEvent.clientY)?.closest('[data-subtask-id]')
+      const targetId = row?.getAttribute('data-subtask-id')
+      if (!targetId || targetId === item.id) return
+      const targetIndex = items.findIndex(entry => entry.id === targetId)
+      if (targetIndex < 0) return
+      const beforeId = items[targetIndex].id
+      if (upEvent.clientY < (row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2)) {
+        void reorderSubtask(task.id, item.id, { beforeId, afterId: targetIndex > 0 ? items[targetIndex - 1].id : null })
+      } else {
+        const next = items[targetIndex + 1]
+        void reorderSubtask(task.id, item.id, { afterId: beforeId, beforeId: next ? next.id : null })
+      }
+    }
+    window.addEventListener('pointermove', onMove, true)
+    window.addEventListener('pointerup', onUp, true)
+  }
+
+  return jsxs('div', {
+    className: 'mt-1',
+    children: [
+      items.map(item => jsxs('div', {
+        'data-subtask-id': item.id,
+        className: 'mb-1 flex items-center gap-1',
+        children: [
+          jsx('button', {
+            'aria-label': 'Reorder subtask',
+            className: 'shrink-0 cursor-grab px-0.5 text-[0.6875rem] text-(--ui-text-quaternary)',
+            disabled,
+            onPointerDown: event => startReorder(item, event),
+            type: 'button',
+            children: '::'
+          }),
+          jsx('input', {
+            'aria-label': item.done ? 'Mark subtask incomplete' : 'Mark subtask complete',
+            checked: item.done,
+            disabled,
+            onChange: event => void updateSubtask(task.id, item.id, { done: event.target.checked }),
+            type: 'checkbox'
+          }),
+          jsx(DimInput, {
+            'aria-label': 'Subtask title',
+            className: 'h-7 min-w-0 flex-1 text-xs',
+            disabled,
+            maxLength: 500,
+            onBlur: event => {
+              const title = event.target.value.trim()
+              if (title && title !== item.title) void updateSubtask(task.id, item.id, { title })
+            },
+            onKeyDown: event => {
+              if (event.key === 'Enter') event.currentTarget.blur()
+            },
+            defaultValue: item.title
+          }),
+          jsx(Button, {
+            'aria-label': 'Delete subtask',
+            disabled,
+            onClick: () => void removeSubtask(task.id, item.id),
+            size: 'icon-xs',
+            type: 'button',
+            variant: 'ghost',
+            children: jsx(icons.X, { className: 'size-3.5' })
+          })
+        ]
+      }, item.id)),
+      jsxs('div', {
+        className: 'mt-1 flex items-center gap-1',
+        children: [
+          jsx(DimInput, {
+            'aria-label': 'New subtask',
+            className: 'h-7 min-w-0 flex-1 text-xs',
+            disabled,
+            maxLength: 500,
+            onChange: event => setDraft(event.target.value),
+            onKeyDown: event => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                void addItem()
+              }
+            },
+            placeholder: 'Add a subtask',
+            value: draft
+          }),
+          jsx(Button, {
+            disabled: disabled || !draft.trim(),
+            onClick: () => void addItem(),
+            size: 'xs',
+            type: 'button',
+            variant: 'secondary',
+            children: 'Add'
+          })
+        ]
+      })
+    ]
+  })
+}
+
+function TaskDetails({ ctx, task, disabled, update, remove, close, completeSession, addSubtask, updateSubtask, removeSubtask, reorderSubtask, boardRevision }) {
   const activeProfile = useValue(host.state.profile)
   const initialDraftRef = useRef(null)
   if (initialDraftRef.current === null) {
@@ -1086,13 +1326,12 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
 
   const workFields = [
     jsx(FieldLabel, { children: 'Task title' }, 'title-label'),
-    jsx(Input, {
+    jsx(DimInput, {
       'aria-label': 'Task title',
       className: 'h-7 text-xs',
       disabled,
       maxLength: 500,
       onChange: event => setTitleDraft(event.target.value),
-      style: { borderColor: 'color-mix(in srgb, var(--ui-text-primary) 22%, transparent)' },
       value: titleDraft
     }, 'title'),
     jsx(TextAreaField, { disabled, label: 'Brief and decisions', maxLength: 8000, onChange: event => setBriefDraft(event.target.value), placeholder: 'Durable context for re-entry', value: briefDraft }, 'brief'),
@@ -1156,7 +1395,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
           children: 'Timed'
         }),
         dueMode === 'timed'
-          ? jsx(Input, {
+          ? jsx(DimInput, {
               'aria-label': 'Timed deadline',
               className: 'h-7 min-w-0 flex-1 text-xs',
               disabled,
@@ -1164,7 +1403,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
               type: 'datetime-local',
               value: timedDraft
             }, 'timed')
-          : jsx(Input, {
+          : jsx(DimInput, {
               'aria-label': 'Due date',
               className: 'h-7 min-w-0 flex-1 text-xs',
               disabled,
@@ -1185,7 +1424,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
       }, String(value)))
     }, 'pri'),
     jsx(FieldLabel, { children: 'Project' }, 'proj-label'),
-    jsx(Input, {
+    jsx(DimInput, {
       'aria-label': 'Project',
       className: 'h-7 text-xs',
       disabled,
@@ -1201,13 +1440,13 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
     jsxs('div', {
       className: 'grid grid-cols-2 gap-1.5',
       children: [
-        jsx(Input, { 'aria-label': 'Waiting on', className: 'h-7 text-xs', disabled, maxLength: 1000, onChange: event => setWaitingOnDraft(event.target.value), placeholder: 'Waiting on', value: waitingOnDraft }),
-        jsx(Input, { 'aria-label': 'Review date', className: 'h-7 text-xs', disabled, onChange: event => setReviewDateDraft(event.target.value), type: 'date', value: reviewDateDraft })
+        jsx(DimInput, { 'aria-label': 'Waiting on', className: 'h-7 text-xs', disabled, maxLength: 1000, onChange: event => setWaitingOnDraft(event.target.value), placeholder: 'Waiting on', value: waitingOnDraft }),
+        jsx(DimInput, { 'aria-label': 'Review date', className: 'h-7 text-xs', disabled, onChange: event => setReviewDateDraft(event.target.value), type: 'date', value: reviewDateDraft })
       ]
     }, 'wait-row'),
     jsx(TextAreaField, { disabled, label: 'Blocker', maxLength: 2000, onChange: event => setBlockerDraft(event.target.value), placeholder: 'What prevents progress?', value: blockerDraft }, 'blocker'),
     jsx(FieldLabel, { children: 'Owner and execution' }, 'owner-label'),
-    jsx(Input, { 'aria-label': 'Owner', className: 'h-7 text-xs', disabled, maxLength: 200, onChange: event => setOwnerDraft(event.target.value), placeholder: 'Owner or assignee', value: ownerDraft }, 'owner'),
+    jsx(DimInput, { 'aria-label': 'Owner', className: 'h-7 text-xs', disabled, maxLength: 200, onChange: event => setOwnerDraft(event.target.value), placeholder: 'Owner or assignee', value: ownerDraft }, 'owner'),
     jsx('div', {
       className: 'mt-1 flex flex-wrap gap-1',
       children: ['manual', 'supervised', 'autonomous'].map(value => jsx(ChoiceButton, { active: executionModeDraft === value, disabled, onClick: () => setExecutionModeDraft(value), children: value }, value))
@@ -1220,7 +1459,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
 
   const moreFields = [
     jsx(FieldLabel, { children: 'Recurrence note' }, 'rec-label'),
-    jsx(Input, {
+    jsx(DimInput, {
       'aria-label': 'Recurrence note',
       className: 'h-7 text-xs',
       disabled,
@@ -1233,8 +1472,8 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
     jsxs('div', {
       className: 'grid grid-cols-2 gap-1.5',
       children: [
-        jsx(Input, { 'aria-label': 'Recurrence rule', className: 'h-7 text-xs', disabled, maxLength: 50, onChange: event => setRecurrenceRuleDraft(event.target.value), placeholder: 'daily, weekdays, weekly…', value: recurrenceRuleDraft }),
-        jsx(Input, { 'aria-label': 'Recurrence timezone', className: 'h-7 text-xs', disabled, maxLength: 100, onChange: event => setRecurrenceTimezoneDraft(event.target.value), placeholder: 'Europe/Amsterdam', value: recurrenceTimezoneDraft })
+        jsx(DimInput, { 'aria-label': 'Recurrence rule', className: 'h-7 text-xs', disabled, maxLength: 50, onChange: event => setRecurrenceRuleDraft(event.target.value), placeholder: 'daily, weekdays, weekly…', value: recurrenceRuleDraft }),
+        jsx(DimInput, { 'aria-label': 'Recurrence timezone', className: 'h-7 text-xs', disabled, maxLength: 100, onChange: event => setRecurrenceTimezoneDraft(event.target.value), placeholder: 'Europe/Amsterdam', value: recurrenceTimezoneDraft })
       ]
     }, 'rule'),
     task.seriesId && jsx('div', { className: 'mt-1 break-all text-[0.625rem] text-(--ui-text-quaternary)', children: `Series ${task.seriesId} · occurrence ${task.occurrenceNumber}` }, 'series'),
@@ -1284,38 +1523,29 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
                 })
               : jsx('div', { className: 'py-2 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'No history recorded yet.' })
       ]
-    }, 'history'),
-    jsxs('div', {
-      className: 'mt-2 flex items-center gap-1',
-      children: [
-        jsx(Button, {
-          disabled,
-          onClick: async () => {
-            if (!confirmDelete) {
-              setConfirmDelete(true)
-              return
-            }
-            // Block the autosave timer and unmount flush before the first await,
-            // otherwise a dirty draft is PATCHed for a task being deleted.
-            deletedRef.current = true
-            if (savingRef.current) await savingRef.current.catch(() => false)
-            if (await remove(task.id)) {
-              close()
-              return
-            }
-            deletedRef.current = false
-          },
-          size: 'xs',
-          type: 'button',
-          variant: 'text',
-          children: confirmDelete ? 'Confirm delete' : 'Delete'
-        }),
-        jsx(Button, { disabled, onClick: close, size: 'xs', type: 'button', variant: 'text', children: 'Cancel' })
-      ]
-    }, 'actions')
+    }, 'history')
   ]
 
-  const tabFields = detailTab === 'plan' ? planFields : detailTab === 'wait' ? waitFields : detailTab === 'more' ? moreFields : workFields
+  const subsFields = [
+    jsx(SubtaskEditor, {
+      addSubtask,
+      disabled,
+      removeSubtask,
+      reorderSubtask,
+      task,
+      updateSubtask
+    }, 'subs')
+  ]
+
+  const tabFields = detailTab === 'plan'
+    ? planFields
+    : detailTab === 'wait'
+      ? waitFields
+      : detailTab === 'subs'
+        ? subsFields
+        : detailTab === 'more'
+          ? moreFields
+          : workFields
 
   return jsxs('form', {
     className: 'mt-2 rounded-md border border-(--ui-stroke-secondary) p-2',
@@ -1344,7 +1574,35 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
           })
         ]
       }),
-      ...tabFields
+      ...tabFields,
+      jsxs('div', {
+        className: 'mt-2 flex items-center gap-1',
+        children: [
+          jsx(Button, {
+            disabled,
+            onClick: async () => {
+              if (!confirmDelete) {
+                setConfirmDelete(true)
+                return
+              }
+              // Block the autosave timer and unmount flush before the first await,
+              // otherwise a dirty draft is PATCHed for a task being deleted.
+              deletedRef.current = true
+              if (savingRef.current) await savingRef.current.catch(() => false)
+              if (await remove(task.id)) {
+                close()
+                return
+              }
+              deletedRef.current = false
+            },
+            size: 'xs',
+            type: 'button',
+            variant: 'text',
+            children: confirmDelete ? 'Confirm delete' : 'Delete'
+          }),
+          jsx(Button, { disabled, onClick: close, size: 'xs', type: 'button', variant: 'text', children: 'Cancel' })
+        ]
+      })
     ]
   })
 }
@@ -1352,7 +1610,8 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
 const PRIORITY_PILL = {
   1: { label: 'P1', background: 'color-mix(in srgb, #ef4444 22%, transparent)', color: '#f87171', border: '#ef4444' },
   2: { label: 'P2', background: 'color-mix(in srgb, #f59e0b 22%, transparent)', color: '#fbbf24', border: '#f59e0b' },
-  3: { label: 'P3', background: 'color-mix(in srgb, #3b82f6 22%, transparent)', color: '#60a5fa', border: '#3b82f6' }
+  3: { label: 'P3', background: 'color-mix(in srgb, #3b82f6 22%, transparent)', color: '#60a5fa', border: '#3b82f6' },
+  4: { label: 'P4', background: 'color-mix(in srgb, #64748b 22%, transparent)', color: '#94a3b8', border: '#64748b' }
 }
 
 function PriorityPill({ priority }) {
@@ -1369,11 +1628,47 @@ function PriorityPill({ priority }) {
   })
 }
 
-function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pending, workingId, workWithHermes, prominent = false, reason }) {
+function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pending, workingId, workWithHermes, addSubtask, updateSubtask, removeSubtask, reorderSubtask, prominent = false, reason, boardRevision }) {
   const [editing, setEditing] = useState(false)
+  const [subtasksOpen, setSubtasksOpen] = useState(false)
+  const [confirmComplete, setConfirmComplete] = useState(false)
+  const confirmTimerRef = useRef(null)
   const disabled = pending || workingId === task.id
+
+  const clearConfirmComplete = useCallback(() => {
+    if (confirmTimerRef.current) {
+      clearTimeout(confirmTimerRef.current)
+      confirmTimerRef.current = null
+    }
+    setConfirmComplete(false)
+  }, [])
+
+  useEffect(() => {
+    if (!confirmComplete) return undefined
+    const onPointerDown = event => {
+      if (event.target.closest(`[data-todo-complete="${task.id}"]`)) return
+      clearConfirmComplete()
+    }
+    const onKeyDown = event => {
+      if (event.key === 'Escape') clearConfirmComplete()
+    }
+    window.addEventListener('pointerdown', onPointerDown, true)
+    window.addEventListener('keydown', onKeyDown, true)
+    confirmTimerRef.current = setTimeout(clearConfirmComplete, CONFIRM_COMPLETE_MS)
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('keydown', onKeyDown, true)
+      if (confirmTimerRef.current) {
+        clearTimeout(confirmTimerRef.current)
+        confirmTimerRef.current = null
+      }
+    }
+  }, [clearConfirmComplete, confirmComplete, task.id])
   const due = dueLabel(task)
   const draggable = task.status !== 'done'
+  const canStartNow = task.status === 'open' && (task.plan !== 'now' || task.inbox)
+  const canWorkWithHermes = task.status === 'open' || (task.sessionId && task.sessionState === 'active')
+  const waitHint = ['waiting', 'blocked'].includes(task.status) && !(task.sessionId && task.sessionState === 'active')
 
   const handlePointerDown = event => {
     if (!draggable) return
@@ -1447,95 +1742,184 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
     onPointerDown: handlePointerDown,
     children: [
       jsxs('div', {
-        className: 'flex min-w-0 flex-wrap items-start gap-x-2 gap-y-0.5',
+        className: 'min-w-0',
         children: [
           jsxs('div', {
-            className: 'min-w-0 flex-1 basis-48',
+            className: 'flex min-w-0 items-start gap-x-2',
             children: [
               jsxs('div', {
                 className: cn(
-                  'break-words [overflow-wrap:anywhere] text-xs leading-5 text-(--ui-text-primary)',
+                  'min-w-0 flex-1 break-words [overflow-wrap:anywhere] text-xs leading-5 text-(--ui-text-primary)',
                   task.status === 'done' && 'text-(--ui-text-quaternary) line-through'
                 ),
                 children: [
-                  task.priority && task.priority <= 3 ? jsx(PriorityPill, { priority: task.priority }) : null,
+                  PRIORITY_PILL[task.priority] ? jsx(PriorityPill, { priority: task.priority }) : null,
                   task.title
                 ]
               }),
+              jsxs('div', {
+                className: 'flex shrink-0 items-center gap-0.5 self-start',
+                children: [
+                  jsx(IconButton, {
+                    disabled,
+                    expanded: editing,
+                    icon: icons.MoreHorizontal,
+                    label: 'Plan, status and due date',
+                    onClick: () => setEditing(value => !value)
+                  }),
+                  task.status === 'done'
+                    ? jsx(IconButton, { disabled, icon: icons.RefreshCw, label: 'Reopen', onClick: () => void update(task.id, { status: 'open', waitingOn: null, reviewDate: null, blocker: null }) })
+                    : jsx('span', {
+                        'data-todo-complete': task.id,
+                        children: jsx(IconButton, {
+                          disabled,
+                          icon: confirmComplete ? icons.CheckCircle2 : icons.Check,
+                          label: confirmComplete ? 'Confirm complete' : 'Complete',
+                          tone: confirmComplete ? 'accent' : 'quiet',
+                          onClick: () => {
+                            if (!confirmComplete) {
+                              setConfirmComplete(true)
+                              return
+                            }
+                            clearConfirmComplete()
+                            haptic('success')
+                            void update(task.id, { status: 'done' })
+                          }
+                        })
+                      })
+                ]
+              })
+            ]
+          }),
+          jsxs('div', {
+            'data-todo-due-row': '',
+            className: cn(
+              'mt-0.5 flex w-full items-center gap-1',
+              prominent ? 'justify-start' : 'justify-between'
+            ),
+            children: [
+              jsxs('div', {
+                className: 'flex shrink-0 items-baseline gap-0.5 whitespace-nowrap',
+                children: [
+                  due ? jsx('span', {
+                    className: cn(
+                      'text-[0.625rem] text-(--ui-text-quaternary)',
+                      due.startsWith('Overdue') && 'font-medium text-(--ui-text-secondary)'
+                    ),
+                    children: `${due} ·`
+                  }, 'due-label') : null,
+                  jsx(EstimateButton, { disabled, minutes: task.estimate, onClick: () => void cycleEstimate(task) })
+                ]
+              }),
+              task.status !== 'done' && jsxs('div', {
+                className: 'flex shrink-0 flex-wrap items-center justify-end gap-1',
+                children: [
+                  canStartNow && jsx(Button, {
+                    disabled,
+                    onClick: () => void update(task.id, { plan: 'now', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }),
+                    size: 'xs',
+                    type: 'button',
+                    variant: 'secondary',
+                    children: 'Start now'
+                  }),
+                  canWorkWithHermes && jsx(Button, {
+                    className: cn(prominent ? '' : 'opacity-80 group-hover:opacity-100'),
+                    disabled,
+                    onClick: () => void workWithHermes(task),
+                    size: 'xs',
+                    type: 'button',
+                    variant: prominent ? 'default' : 'secondary',
+                    children: jsxs('span', {
+                      className: 'inline-flex items-center gap-1',
+                      children: [
+                        jsx(icons.MessageCircle, { className: 'size-3' }),
+                        workingId === task.id
+                          ? 'Sending…'
+                          : task.sessionId && task.sessionState === 'active'
+                            ? task.status === 'open' ? 'Resume with Hermes' : 'Open linked session'
+                            : 'Work with Hermes'
+                      ]
+                    })
+                  }),
+                  waitHint && jsx('span', {
+                    className: 'text-[0.625rem] text-(--ui-text-quaternary)',
+                    children: task.status === 'blocked' ? 'Clear the blocker to start Hermes.' : 'Reopen when the wait is over.'
+                  })
+                ]
+              })
+            ]
+          }),
               task.brief && jsx('div', {
                 className: 'mt-0.5 line-clamp-2 break-words text-[0.625rem] leading-4 text-(--ui-text-tertiary)',
                 children: task.brief.replace(/\s+/g, ' ').trim()
+              }),
+              task.subtaskCount > 0 && jsxs('div', {
+                className: 'mt-0.5 min-w-0',
+                children: [
+                  jsxs('button', {
+                    className: 'inline-flex items-center gap-1 text-[0.625rem] text-(--ui-text-quaternary)',
+                    onClick: event => {
+                      event.stopPropagation()
+                      setSubtasksOpen(value => !value)
+                    },
+                    type: 'button',
+                    children: [
+                      jsx(subtasksOpen ? icons.ChevronDown : icons.ChevronRight, { className: 'size-3' }),
+                      `${task.subtaskDoneCount || 0}/${task.subtaskCount}`
+                    ]
+                  }),
+                  subtasksOpen && jsx('div', {
+                    'data-todo-card-subtask': '',
+                    className: 'mt-0.5 space-y-0.5',
+                    children: (task.subtasks || []).map(item => jsxs('button', {
+                      className: 'flex min-w-0 items-start gap-1 text-left',
+                      disabled,
+                      onClick: event => {
+                        event.stopPropagation()
+                        void updateSubtask(task.id, item.id, { done: !item.done })
+                      },
+                      type: 'button',
+                      children: [
+                        jsx('span', {
+                          'aria-hidden': true,
+                          className: cn(
+                            'mt-0.5 size-2.5 shrink-0 rounded-[2px] border',
+                            item.done
+                              ? 'border-(--ui-accent) bg-(--ui-accent)'
+                              : 'border-(--ui-stroke-primary) bg-transparent'
+                          )
+                        }),
+                        jsx('span', {
+                          className: cn(
+                            'min-w-0 flex-1 truncate text-[0.625rem] leading-4',
+                            item.done ? 'text-(--ui-text-quaternary) line-through' : 'text-(--ui-text-tertiary)'
+                          ),
+                          children: item.title.replace(/\s+/g, ' ').trim()
+                        })
+                      ]
+                    }, item.id))
+                  })
+                ]
               }),
               (reason || task.project || task.owner || task.nextAction || task.recurrence) && jsx('div', {
                 className: 'mt-0.5 truncate text-[0.625rem] text-(--ui-text-quaternary)',
                 children: [reason, task.project, task.owner, task.nextAction, task.recurrenceRule || task.recurrence].filter(Boolean).join(' · ')
               })
-            ]
-          }),
-          jsxs('div', {
-            className: 'ms-auto flex shrink-0 items-center gap-0.5 self-start',
-            children: [
-              due ? jsx('span', {
-                className: cn(
-                  'mr-0.5 whitespace-nowrap text-[0.625rem] text-(--ui-text-quaternary)',
-                  due.startsWith('Overdue') && 'font-medium text-(--ui-text-secondary)'
-                ),
-                children: `${due} ·`
-              }, 'due-label') : null,
-              jsx(EstimateButton, { disabled, minutes: task.estimate, onClick: () => void cycleEstimate(task) }),
-              jsx(IconButton, {
-                disabled,
-                expanded: editing,
-                icon: icons.MoreHorizontal,
-                label: 'Plan, status and due date',
-                onClick: () => setEditing(value => !value)
-              }),
-              task.status === 'done'
-                ? jsx(IconButton, { disabled, icon: icons.RefreshCw, label: 'Reopen', onClick: () => void update(task.id, { status: 'open', waitingOn: null, reviewDate: null, blocker: null }) })
-                : jsx(IconButton, { disabled, icon: icons.Check, label: 'Complete', onClick: () => {
-                    haptic('success')
-                    void update(task.id, { status: 'done' })
-                  } })
-            ]
-          })
         ]
       }),
-      editing && jsx(TaskDetails, { close: () => setEditing(false), completeSession, ctx, disabled, remove, task, update }),
-      task.status !== 'done' && jsxs('div', {
-        className: 'mt-1.5 flex flex-wrap items-center gap-1',
-        children: [
-          task.status === 'open' && (task.plan !== 'now' || task.inbox) && jsx(Button, {
-            disabled,
-            onClick: () => void update(task.id, { plan: 'now', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }),
-            size: 'xs',
-            type: 'button',
-            variant: 'secondary',
-            children: 'Start now'
-          }),
-          (task.status === 'open' || (task.sessionId && task.sessionState === 'active')) && jsx(Button, {
-            className: cn(prominent ? '' : 'opacity-80 group-hover:opacity-100'),
-            disabled,
-            onClick: () => void workWithHermes(task),
-            size: 'xs',
-            type: 'button',
-            variant: prominent ? 'default' : 'secondary',
-            children: jsxs('span', {
-              className: 'inline-flex items-center gap-1',
-              children: [
-                jsx(icons.MessageCircle, { className: 'size-3' }),
-                workingId === task.id
-                  ? 'Sending…'
-                  : task.sessionId && task.sessionState === 'active'
-                    ? task.status === 'open' ? 'Resume with Hermes' : 'Open linked session'
-                    : 'Work with Hermes'
-              ]
-            })
-          }),
-          ['waiting', 'blocked'].includes(task.status) && !(task.sessionId && task.sessionState === 'active') && jsx('span', {
-            className: 'text-[0.625rem] text-(--ui-text-quaternary)',
-            children: task.status === 'blocked' ? 'Clear the blocker to start Hermes.' : 'Reopen when the wait is over.'
-          })
-        ]
+      editing && jsx(TaskDetails, {
+        addSubtask,
+        boardRevision,
+        close: () => setEditing(false),
+        completeSession,
+        ctx,
+        disabled,
+        remove,
+        removeSubtask,
+        reorderSubtask,
+        task,
+        update,
+        updateSubtask
       })
     ]
   })
@@ -1677,7 +2061,13 @@ function BoardView({ remote, rowProps, sections }) {
           'data-todo-inbox': '1',
           children: sections.inbox.length
             ? sections.inbox.map(task => jsx(TaskRow, { ...rowProps, pending: remote.pendingIds.has(task.id), task }, task.id))
-            : jsx('div', { className: 'py-1 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'Captured tasks wait here until you start or plan them. Drop tasks here to park them.' })
+            : jsxs('div', {
+                className: 'py-1 text-center text-[0.6875rem] leading-4 text-(--ui-text-quaternary)',
+                children: [
+                  jsx('div', { children: 'Captured tasks wait here until you start or plan them.' }),
+                  jsx('div', { children: 'Drop tasks here to park them.' })
+                ]
+              })
         })
       }),
       jsx(Section, {
@@ -1843,13 +2233,18 @@ function TodoPane({ ctx }) {
       : `v0.3.0-dev · Offline: ${remote.error || 'request failed'}`
 
   const rowProps = {
+    addSubtask: remote.addSubtask,
+    boardRevision: remote.board.revision,
     completeSession: remote.completeSession,
     ctx,
     cycleEstimate: remote.cycleEstimate,
     pending: false,
     remove: remote.remove,
+    removeSubtask: remote.removeSubtask,
     reorder: remote.reorder,
+    reorderSubtask: remote.reorderSubtask,
     update: remote.update,
+    updateSubtask: remote.updateSubtask,
     workingId,
     workWithHermes
   }
@@ -1878,10 +2273,9 @@ function TodoPane({ ctx }) {
             className: 'mt-3 flex gap-1.5',
             onSubmit: event => void addTask(event),
             children: [
-              jsx(Input, {
+              jsx(DimInput, {
                 'aria-label': 'Capture a task to Inbox',
                 className: 'min-w-0 flex-1',
-                style: { borderColor: 'color-mix(in srgb, var(--ui-text-primary) 22%, transparent)' },
                 disabled: remote.connection === 'offline',
                 maxLength: 500,
                 onChange: event => setDraft(event.target.value),
@@ -1907,7 +2301,7 @@ function TodoPane({ ctx }) {
           remote.board.tasks.length > 12 && jsxs('div', {
             className: 'mt-2 flex items-center gap-2',
             children: [
-              jsx(Input, {
+              jsx(DimInput, {
                 'aria-label': 'Filter tasks',
                 className: 'h-7 min-w-0 flex-1 text-xs',
                 onChange: event => setFilter(event.target.value),
@@ -1958,16 +2352,56 @@ export default {
   id: ID,
   name: 'Todo',
   register(ctx) {
+    const paneOptions = {
+      dock: { pane: 'workspace', pos: 'right' },
+      minWidth: '22rem',
+      render: () => jsx(TodoPane, { ctx }),
+      title: 'Todo'
+    }
+    let closeWorkspace = null
+
+    const showTodo = () => {
+      if (typeof host.openWorkspace === 'function') {
+        closeWorkspace = host.openWorkspace('todo', {
+          ...paneOptions,
+          onClose: () => {
+            closeWorkspace = null
+          }
+        })
+        return
+      }
+      if (typeof host.revealPane === 'function') host.revealPane(`${ID}:pane`)
+    }
+
+    if (typeof host.openWorkspace === 'function') {
+      showTodo()
+    } else {
+      ctx.register({
+        id: 'pane',
+        area: 'panes',
+        title: 'todo',
+        data: {
+          placement: 'right',
+          dock: { pane: 'workspace', pos: 'right' },
+          width: '360px'
+        },
+        render: paneOptions.render
+      })
+    }
+
     ctx.register({
-      id: 'pane',
-      area: 'panes',
-      title: 'todo',
+      id: 'open',
+      area: PALETTE_AREA,
       data: {
-        placement: 'right',
-        dock: { pane: 'workspace', pos: 'right' },
-        width: '360px'
-      },
-      render: () => jsx(TodoPane, { ctx })
+        id: 'hermes-todo.open',
+        keywords: ['todo', 'tasks', 'board', 'open', 'reopen', 'show'],
+        label: 'Show Todo',
+        run: showTodo
+      }
+    })
+
+    ctx.onDispose(() => {
+      closeWorkspace?.()
     })
   }
 }
