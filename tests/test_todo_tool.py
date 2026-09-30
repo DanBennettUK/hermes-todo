@@ -101,6 +101,34 @@ class HermesTodoBoardToolTests(unittest.TestCase):
         self.assertEqual(by_id[first["id"]]["status"], "open")
         self.assertNotEqual(by_id[first["id"]]["plan"], "now")
 
+    def test_create_update_and_compact_keep_artefacts(self) -> None:
+        created = self._call(
+            action="create",
+            title="Ship with proof",
+            artefacts=["tests/test_todo_tool.py"],
+        )
+        self.assertTrue(created["ok"])
+        self.assertEqual(created["task"]["artefacts"], ["tests/test_todo_tool.py"])
+        self.assertIn("artefacts", todo_tool.SCHEMA["parameters"]["properties"])
+
+        updated = self._call(
+            action="update",
+            task_id=created["task"]["id"],
+            artefacts=["tests/test_todo_tool.py", "README.md"],
+        )
+        self.assertTrue(updated["ok"])
+        self.assertEqual(
+            updated["task"]["artefacts"],
+            ["tests/test_todo_tool.py", "README.md"],
+        )
+
+        fetched = self._call(action="get", task_id=created["task"]["id"])
+        self.assertTrue(fetched["ok"])
+        self.assertEqual(
+            fetched["task"]["artefacts"],
+            ["tests/test_todo_tool.py", "README.md"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
