@@ -219,7 +219,10 @@ def _meta(payload: dict[str, Any]) -> tuple[int | None, str | None, str]:
 
 @router.get("/board")
 def read_board():
-    return get_board()
+    try:
+        return get_board()
+    except BoardError as exc:
+        raise _bad_request(exc) from exc
 
 
 @router.get("/agenda")

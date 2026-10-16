@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
 import hermes_todo_store as store
 from hermes_todo_store import create_task
@@ -21,6 +22,7 @@ try:
         link_session,
         patch_task,
         read_agenda,
+        read_board,
         read_task_history,
         read_tasks,
     )
@@ -39,16 +41,22 @@ else:
 class HermesTodoApiContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self._old_home = os.environ.get("HERMES_HOME")
+        self._old_todo_profile = os.environ.get("HERMES_TODO_PROFILE")
         self._old_home_resolver = store._get_hermes_home
         store._get_hermes_home = None
         self._temp = tempfile.TemporaryDirectory()
         os.environ["HERMES_HOME"] = self._temp.name
+        os.environ.pop("HERMES_TODO_PROFILE", None)
 
     def tearDown(self) -> None:
         if self._old_home is None:
             os.environ.pop("HERMES_HOME", None)
         else:
             os.environ["HERMES_HOME"] = self._old_home
+        if self._old_todo_profile is None:
+            os.environ.pop("HERMES_TODO_PROFILE", None)
+        else:
+            os.environ["HERMES_TODO_PROFILE"] = self._old_todo_profile
         store._get_hermes_home = self._old_home_resolver
         self._temp.cleanup()
 
@@ -177,6 +185,14 @@ class HermesTodoApiContractTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 409)
         self.assertEqual(caught.exception.detail["error"], "revision_conflict")
         self.assertEqual(caught.exception.detail["currentRevision"], 2)
+
+    def test_missing_profile_on_board_read_is_a_bad_request(self) -> None:
+        os.environ["HERMES_TODO_PROFILE"] = "missing"
+        with self.assertRaises(HTTPException) as caught:
+            read_board()
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertIn("missing", caught.exception.detail)
+        self.assertFalse((Path(self._temp.name) / "profiles" / "missing").exists())
 
     def test_board_envelope_and_empty_read_contracts(self) -> None:
         empty_search = read_tasks(limit=100)

@@ -42,6 +42,15 @@ const DETAIL_TABS = [
 const AUTOSAVE_MS = 500
 const SUBTASK_DRAG_THRESHOLD_PX = 6
 const CONFIRM_COMPLETE_MS = 3000
+const PROFILE_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
+function canonicalTodoProfile(value) {
+  if (typeof value !== 'string') return ''
+  const name = value.trim().toLowerCase()
+  if (!name) return ''
+  if (name === 'default') return 'default'
+  return PROFILE_ID.test(name) ? name : ''
+}
 
 const emptyBoard = () => ({ version: 7, revision: 0, tasks: [] })
 
@@ -882,6 +891,7 @@ function useRemoteBoard(ctx) {
     reorderSubtask,
     error: query.error ? errorText(query.error) : '',
     linkSession,
+    todoProfile: typeof query.data?.todoProfile === 'string' ? query.data.todoProfile : '',
     pendingIds,
     refresh: () => query.refetch(),
     remove,
@@ -1173,7 +1183,7 @@ function SubtaskEditor({ task, disabled, addSubtask, updateSubtask, removeSubtas
             children: '::'
           }),
           jsx(IconButton, { disabled: disabled || index === 0, icon: icons.ArrowUp, label: `Move subtask ${item.title} earlier`, onClick: () => void reorderSubtask(task.id, item.id, { beforeId: items[index - 1].id }) }),
-          jsx(IconButton, { disabled: disabled || index === items.length - 1, icon: icons.ArrowDown, label: `Move subtask ${item.title} later`, onClick: () => void reorderSubtask(task.id, item.id, { afterId: items[index + 1].id }) }),
+          jsx(IconButton, { disabled: disabled || index === items.length - 1, icon: icons.ArrowBarToDown, label: `Move subtask ${item.title} later`, onClick: () => void reorderSubtask(task.id, item.id, { afterId: items[index + 1].id }) }),
           jsx('input', {
             'aria-label': item.done ? 'Mark subtask incomplete' : 'Mark subtask complete',
             checked: item.done,
@@ -1829,7 +1839,7 @@ function TaskRow({ ctx, task, update, reorder, categoryTasks = [], remove, compl
                     onClick: () => { if (editing) void closeRequestRef.current?.(); else setEditing(true) }
                   }),
                   canReorder && jsx(IconButton, { disabled: disabled || categoryIndex <= 0, icon: icons.ArrowUp, label: 'Move task earlier', onClick: () => void moveTask(-1) }),
-                  canReorder && jsx(IconButton, { disabled: disabled || categoryIndex < 0 || categoryIndex >= categoryTasks.length - 1, icon: icons.ArrowDown, label: 'Move task later', onClick: () => void moveTask(1) }),
+                  canReorder && jsx(IconButton, { disabled: disabled || categoryIndex < 0 || categoryIndex >= categoryTasks.length - 1, icon: icons.ArrowBarToDown, label: 'Move task later', onClick: () => void moveTask(1) }),
                   task.status === 'done'
                     ? jsx(IconButton, { disabled, icon: icons.RefreshCw, label: 'Reopen', onClick: () => void update(task.id, { status: 'open', waitingOn: null, reviewDate: null, blocker: null }) })
                     : jsx('span', {
@@ -2253,7 +2263,7 @@ function TodoPane({ ctx }) {
           title: task.title.slice(0, 160)
         }
         const cwd = host.state.cwd.get().trim()
-        const profile = host.state.profile.get().trim()
+        const profile = canonicalTodoProfile(remote.todoProfile) || host.state.profile.get().trim()
         const model = host.state.model.get().trim()
         if (cwd) params.cwd = cwd
         if (profile) params.profile = profile
@@ -2290,11 +2300,13 @@ function TodoPane({ ctx }) {
     [remote]
   )
 
+  const pinnedProfile = canonicalTodoProfile(remote.todoProfile)
+  const profileSuffix = pinnedProfile ? ` · ${pinnedProfile}` : ''
   const connectionLabel = remote.connection === 'online'
-    ? 'v0.2.0 · Shared with Hermes'
+    ? `v0.2.1 · Shared with Hermes${profileSuffix}`
     : remote.connection === 'connecting'
-      ? 'v0.2.0 · Connecting…'
-      : `v0.2.0 · Offline: ${remote.error || 'request failed'}`
+      ? `v0.2.1 · Connecting…${profileSuffix}`
+      : `v0.2.1 · Offline: ${remote.error || 'request failed'}${profileSuffix}`
 
   const rowProps = {
     addSubtask: remote.addSubtask,

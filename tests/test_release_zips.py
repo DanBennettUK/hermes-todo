@@ -72,11 +72,11 @@ class ReleaseZipTests(unittest.TestCase):
             plugin = root / "server-plugin" / "hermes-todo"
             dashboard = plugin / "dashboard"
             dashboard.mkdir(parents=True)
-            (plugin / "plugin.yaml").write_text("version: 0.2.0\n", encoding="utf-8")
+            (plugin / "plugin.yaml").write_text("version: 0.2.1\n", encoding="utf-8")
             (dashboard / "manifest.json").write_text('{"version": "9.9.9"}\n', encoding="utf-8")
             with self.assertRaises(release.ReleaseZipError) as caught:
                 release.read_version(root)
-        self.assertIn("0.2.0", str(caught.exception))
+        self.assertIn("0.2.1", str(caught.exception))
         self.assertIn("9.9.9", str(caught.exception))
 
     def test_select_bundle_files_drops_ci_and_rejects_private_files(self) -> None:

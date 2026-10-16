@@ -16,16 +16,22 @@ import hermes_todo_store as store
 class HermesTodoCliTests(unittest.TestCase):
     def setUp(self) -> None:
         self.old_home = os.environ.get("HERMES_HOME")
+        self.old_todo_profile = os.environ.get("HERMES_TODO_PROFILE")
         self.old_home_resolver = store._get_hermes_home
         store._get_hermes_home = None
         self.temp = tempfile.TemporaryDirectory()
         os.environ["HERMES_HOME"] = self.temp.name
+        os.environ.pop("HERMES_TODO_PROFILE", None)
 
     def tearDown(self) -> None:
         if self.old_home is None:
             os.environ.pop("HERMES_HOME", None)
         else:
             os.environ["HERMES_HOME"] = self.old_home
+        if self.old_todo_profile is None:
+            os.environ.pop("HERMES_TODO_PROFILE", None)
+        else:
+            os.environ["HERMES_TODO_PROFILE"] = self.old_todo_profile
         store._get_hermes_home = self.old_home_resolver
         self.temp.cleanup()
 

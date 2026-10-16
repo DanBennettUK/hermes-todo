@@ -2,8 +2,8 @@
 
 ## Supported versions
 
-Version 0.2.0 is the supported release. Version 0.1.2 and older are not.
-Security fixes are assessed for 0.2.0.
+Version 0.2.1 is the supported release. Version 0.1.2 and older are not.
+Security fixes are assessed for 0.2.1.
 
 Upgrading from 0.1.2 migrates `todo.sqlite3` to schema v7. That migration is
 one-way. Back up the database before you upgrade. The upgrade section in

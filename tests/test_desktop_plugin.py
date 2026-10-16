@@ -49,7 +49,7 @@ class HermesTodoDesktopContractTests(unittest.TestCase):
         self.assertNotIn("basis-48", source)
         self.assertIn("PALETTE_AREA", source)
         self.assertIn("Show Todo", source)
-        self.assertIn("v0.2.0 · Shared with Hermes", source)
+        self.assertIn("v0.2.1 · Shared with Hermes", source)
         self.assertNotIn("v0.3.0-dev", source)
         self.assertIn("host.openWorkspace", source)
         self.assertNotIn("loadAgenda", source)

@@ -23,15 +23,21 @@ class HermesTodoBoardToolTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.previous_home = os.environ.get("HERMES_HOME")
+        self.previous_todo_profile = os.environ.get("HERMES_TODO_PROFILE")
         self.previous_home_resolver = store._get_hermes_home
         store._get_hermes_home = None
         os.environ["HERMES_HOME"] = self.tmp.name
+        os.environ.pop("HERMES_TODO_PROFILE", None)
 
     def tearDown(self) -> None:
         if self.previous_home is None:
             os.environ.pop("HERMES_HOME", None)
         else:
             os.environ["HERMES_HOME"] = self.previous_home
+        if self.previous_todo_profile is None:
+            os.environ.pop("HERMES_TODO_PROFILE", None)
+        else:
+            os.environ["HERMES_TODO_PROFILE"] = self.previous_todo_profile
         store._get_hermes_home = self.previous_home_resolver
         self.tmp.cleanup()
 
