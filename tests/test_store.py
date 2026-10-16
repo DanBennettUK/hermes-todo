@@ -888,6 +888,21 @@ class HermesTodoStoreTests(unittest.TestCase):
         self.assertEqual(current[created["task"]["id"]]["position"], POSITION_MAX)
         self.assertNotIn("Imported huge", {task["title"] for task in current.values()})
 
+        conn = sqlite3.connect(resolve_db_path())
+        conn.execute(
+            "UPDATE tasks SET position = ? WHERE id = ?",
+            (1e308, created["task"]["id"]),
+        )
+        conn.commit()
+        conn.close()
+        retitled = update_task(
+            created["task"]["id"],
+            {"title": "Still editable"},
+            return_board=False,
+        )
+        self.assertEqual(retitled["task"]["title"], "Still editable")
+        self.assertEqual(retitled["task"]["position"], 1e308)
+
     def test_reorder_rebalances_when_midpoint_saturates(self) -> None:
         first = create_task("First", return_board=False)["task"]
         second = create_task("Second", return_board=False)["task"]
