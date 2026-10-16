@@ -182,7 +182,7 @@ test('a categorized task paints its title and move-later control on the host ico
     const painted = textOf(root)
     assert.match(painted, /Ship the notes/)
     assert.match(painted, /Move task later/)
-    assert.match(painted, /"v0\.2\.0 · Shared with Hermes"/)
+    assert.match(painted, /"v0\.2\.1 · Shared with Hermes"/)
     act(() => button(root, 'Plan, status and due date').props.onClick())
     assert.ok(button(root, 'Save'))
     act(() => root.root.findByType('nav').props.onChange('subs'))
@@ -216,7 +216,7 @@ test('the pane shows and starts Hermes on the profile named by the board', async
   })
   try {
     const root = env.mount(env.TodoPane, { ctx: env.ctx })
-    assert.match(textOf(root), /v0\.2\.0 · Shared with Hermes · work/)
+    assert.match(textOf(root), /v0\.2\.1 · Shared with Hermes · work/)
     await act(async () => { button(root, 'Work with Hermes').props.onClick() })
     for (let i = 0; i < 5; i += 1) await act(async () => { await Promise.resolve() })
     const created = calls.find(call => call.method === 'session.create')
@@ -238,7 +238,7 @@ test('a board profile that is not a profile id leaves the desktop profile in pla
   env.ctx.rest = async () => ({ revision: 4, task: { ...board.tasks[0], sessionId: 'stored-1', sessionState: 'active' } })
   try {
     const root = env.mount(env.TodoPane, { ctx: env.ctx })
-    assert.match(textOf(root), /"v0\.2\.0 · Shared with Hermes"/)
+    assert.match(textOf(root), /"v0\.2\.1 · Shared with Hermes"/)
     assert.doesNotMatch(textOf(root), /nope/)
     await act(async () => { button(root, 'Work with Hermes').props.onClick() })
     for (let i = 0; i < 5; i += 1) await act(async () => { await Promise.resolve() })

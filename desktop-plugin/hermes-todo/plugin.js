@@ -2303,10 +2303,10 @@ function TodoPane({ ctx }) {
   const pinnedProfile = canonicalTodoProfile(remote.todoProfile)
   const profileSuffix = pinnedProfile ? ` · ${pinnedProfile}` : ''
   const connectionLabel = remote.connection === 'online'
-    ? `v0.2.0 · Shared with Hermes${profileSuffix}`
+    ? `v0.2.1 · Shared with Hermes${profileSuffix}`
     : remote.connection === 'connecting'
-      ? `v0.2.0 · Connecting…${profileSuffix}`
-      : `v0.2.0 · Offline: ${remote.error || 'request failed'}${profileSuffix}`
+      ? `v0.2.1 · Connecting…${profileSuffix}`
+      : `v0.2.1 · Offline: ${remote.error || 'request failed'}${profileSuffix}`
 
   const rowProps = {
     addSubtask: remote.addSubtask,

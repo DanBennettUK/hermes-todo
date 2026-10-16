@@ -62,8 +62,8 @@ Hermes Todo has two independently installed components. Install the server
 plugin first, then the Desktop plugin, into one explicitly selected Hermes
 profile. Do not rely on Hermes' sticky active profile.
 
-The manifests in this source tree are version 0.2.0. The versioned commands
-below use the v0.2.0 release archives. The GitHub subdirectory installer
+The manifests in this source tree are version 0.2.1. The versioned commands
+below use the v0.2.1 release archives. The GitHub subdirectory installer
 still copies the repository's default branch, not that tag.
 
 ### Quick install with your agent
@@ -71,7 +71,7 @@ still copies the repository's default branch, not that tag.
 If your agent can install Hermes plugins, tell it:
 
 ```text
-Install Hermes Todo v0.2.0 from https://github.com/DanBennettUK/hermes-todo/releases/tag/v0.2.0 into the `default` Hermes profile. Use the release bundle, install both the server and Desktop components, and verify that the Todo pane reports Shared with Hermes.
+Install Hermes Todo v0.2.1 from https://github.com/DanBennettUK/hermes-todo/releases/tag/v0.2.1 into the `default` Hermes profile. Use the release bundle, install both the server and Desktop components, and verify that the Todo pane reports Shared with Hermes.
 ```
 
 Replace `default` with the name of your selected Hermes profile when needed.
@@ -117,21 +117,21 @@ SHA-256 checksum instead. The bundle contains both components from one tag.
 
 ### Reproducible release install
 
-Download both `hermes-todo-v0.2.0.zip` and
-`hermes-todo-v0.2.0.zip.sha256` from the release, then verify and unpack them:
+Download both `hermes-todo-v0.2.1.zip` and
+`hermes-todo-v0.2.1.zip.sha256` from the release, then verify and unpack them:
 
 ```bash
-sha256sum -c hermes-todo-v0.2.0.zip.sha256
-python3 -m zipfile -e hermes-todo-v0.2.0.zip .
-BUNDLE_DIR="$PWD/hermes-todo-v0.2.0"
+sha256sum -c hermes-todo-v0.2.1.zip.sha256
+python3 -m zipfile -e hermes-todo-v0.2.1.zip .
+BUNDLE_DIR="$PWD/hermes-todo-v0.2.1"
 ```
 
-On Windows, compare `Get-FileHash hermes-todo-v0.2.0.zip -Algorithm SHA256`
+On Windows, compare `Get-FileHash hermes-todo-v0.2.1.zip -Algorithm SHA256`
 with the published `.sha256` value, then install with:
 
 ```powershell
-Expand-Archive -Path hermes-todo-v0.2.0.zip -DestinationPath .
-$BundleDir = Join-Path $PWD "hermes-todo-v0.2.0"
+Expand-Archive -Path hermes-todo-v0.2.1.zip -DestinationPath .
+$BundleDir = Join-Path $PWD "hermes-todo-v0.2.1"
 New-Item -ItemType Directory -Force (Join-Path $ProfileHome "plugins")
 New-Item -ItemType Directory -Force (Join-Path $ProfileHome "desktop-plugins")
 Copy-Item -Recurse (Join-Path $BundleDir "server-plugin/hermes-todo") `
@@ -221,7 +221,7 @@ hermes todo list
 ## Upgrade
 
 Stop Hermes Desktop before you copy the database, so no process has it open.
-v0.2.0 migrates a v0.1.2 database from schema v3 to schema v7 the first time
+v0.2.1 migrates a v0.1.2 database from schema v3 to schema v7 the first time
 it opens the file. The migration keeps existing tasks. When the plan is Later,
 the category becomes Soon, and the plan value stays Later. Positions are
 assigned. There is no downgrade. Restoring the previous plugin code does not
@@ -325,7 +325,7 @@ hermes --profile "$PROFILE" plugins disable hermes-todo
 Do not delete `$PROFILE_HOME/hermes-todo/todo.sqlite3`. Plugin code and data are
 separate, so the board remains available for re-enabling or diagnosis.
 
-If v0.2.0 has already migrated the database, restoring the old code leaves
+If v0.2.1 has already migrated the database, restoring the old code leaves
 schema v7 in place. To get the pre-upgrade data back, stop Hermes Desktop and
 copy `$BACKUP_DIR/todo.sqlite3` over the live file. Copy the `-wal` and `-shm`
 sidecars from the same backup when you saved them, or delete any live sidecars
@@ -452,18 +452,18 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for storage and privacy details.
 
 `scripts/build_release_zips.py` writes the two archives a release uses, plus a SHA-256 sidecar for each. It does not create a tag, a GitHub release, or an upload.
 
-Run it from a clean checkout of the commit you intend to publish. The script packs the working-tree bytes of git-tracked files, so an uncommitted edit would be included. The full archive is `dist/hermes-todo-v0.2.0.zip`. Its top directory is `hermes-todo-v0.2.0/`, and it contains the server plugin, the Desktop plugin, the tests, and these docs. Paths under `.github/` are omitted. The Desktop-only archive is `dist/hermes-todo-desktop-v0.2.0.zip`. It contains `hermes-todo/plugin.js` and `hermes-todo/README.md`.
+Run it from a clean checkout of the commit you intend to publish. The script packs the working-tree bytes of git-tracked files, so an uncommitted edit would be included. The full archive is `dist/hermes-todo-v0.2.1.zip`. Its top directory is `hermes-todo-v0.2.1/`, and it contains the server plugin, the Desktop plugin, the tests, and these docs. Paths under `.github/` are omitted. The Desktop-only archive is `dist/hermes-todo-desktop-v0.2.1.zip`. It contains `hermes-todo/plugin.js` and `hermes-todo/README.md`.
 
 The version in the file names is the `version` field in `plugin.yaml`. The script stops if that value disagrees with `dashboard/manifest.json`. It also stops if a tracked path is a database, an env file, or a `node_modules` directory.
 
 ```bash
 python3 scripts/build_release_zips.py
 cd dist
-sha256sum -c hermes-todo-v0.2.0.zip.sha256
-sha256sum -c hermes-todo-desktop-v0.2.0.zip.sha256
+sha256sum -c hermes-todo-v0.2.1.zip.sha256
+sha256sum -c hermes-todo-desktop-v0.2.1.zip.sha256
 ```
 
-The sidecar names the zip without a directory, so check it from `dist/`. On Windows, compare `Get-FileHash hermes-todo-v0.2.0.zip -Algorithm SHA256` with the hash in the sidecar.
+The sidecar names the zip without a directory, so check it from `dist/`. On Windows, compare `Get-FileHash hermes-todo-v0.2.1.zip -Algorithm SHA256` with the hash in the sidecar.
 
 ## Licence
 
