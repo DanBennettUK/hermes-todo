@@ -431,6 +431,10 @@ def _clean_position(value: Any, field: str = "Position") -> float:
     position = float(value)
     if not math.isfinite(position):
         raise BoardError(f"{field} must be a finite number")
+    if position < POSITION_MIN or position > POSITION_MAX:
+        raise BoardError(
+            f"{field} must be between {POSITION_MIN:g} and {POSITION_MAX:g}"
+        )
     return position
 
 
