@@ -110,6 +110,8 @@ SCHEMA = {
     },
 }
 
+_ACTIONS = frozenset(SCHEMA["parameters"]["properties"]["action"]["enum"])
+
 
 def _compact_task(task: dict[str, Any]) -> dict[str, Any]:
     keys = (
@@ -135,6 +137,8 @@ def _revision_kwargs(args: dict[str, Any]) -> dict[str, Any]:
 
 def _apply(args: dict[str, Any]) -> dict[str, Any]:
     action = args.get("action")
+    if action not in _ACTIONS:
+        raise BoardError(f"Unknown action: {action}")
     if action == "list":
         result = search_tasks(
             args.get("query"),
