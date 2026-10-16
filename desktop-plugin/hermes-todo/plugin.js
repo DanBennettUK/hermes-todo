@@ -1173,7 +1173,7 @@ function SubtaskEditor({ task, disabled, addSubtask, updateSubtask, removeSubtas
             children: '::'
           }),
           jsx(IconButton, { disabled: disabled || index === 0, icon: icons.ArrowUp, label: `Move subtask ${item.title} earlier`, onClick: () => void reorderSubtask(task.id, item.id, { beforeId: items[index - 1].id }) }),
-          jsx(IconButton, { disabled: disabled || index === items.length - 1, icon: icons.ArrowDown, label: `Move subtask ${item.title} later`, onClick: () => void reorderSubtask(task.id, item.id, { afterId: items[index + 1].id }) }),
+          jsx(IconButton, { disabled: disabled || index === items.length - 1, icon: icons.ArrowBarToDown, label: `Move subtask ${item.title} later`, onClick: () => void reorderSubtask(task.id, item.id, { afterId: items[index + 1].id }) }),
           jsx('input', {
             'aria-label': item.done ? 'Mark subtask incomplete' : 'Mark subtask complete',
             checked: item.done,
@@ -1829,7 +1829,7 @@ function TaskRow({ ctx, task, update, reorder, categoryTasks = [], remove, compl
                     onClick: () => { if (editing) void closeRequestRef.current?.(); else setEditing(true) }
                   }),
                   canReorder && jsx(IconButton, { disabled: disabled || categoryIndex <= 0, icon: icons.ArrowUp, label: 'Move task earlier', onClick: () => void moveTask(-1) }),
-                  canReorder && jsx(IconButton, { disabled: disabled || categoryIndex < 0 || categoryIndex >= categoryTasks.length - 1, icon: icons.ArrowDown, label: 'Move task later', onClick: () => void moveTask(1) }),
+                  canReorder && jsx(IconButton, { disabled: disabled || categoryIndex < 0 || categoryIndex >= categoryTasks.length - 1, icon: icons.ArrowBarToDown, label: 'Move task later', onClick: () => void moveTask(1) }),
                   task.status === 'done'
                     ? jsx(IconButton, { disabled, icon: icons.RefreshCw, label: 'Reopen', onClick: () => void update(task.id, { status: 'open', waitingOn: null, reviewDate: null, blocker: null }) })
                     : jsx('span', {

@@ -159,6 +159,11 @@ test('an empty board still paints the Todo pane', () => {
   }
 })
 
+function button(root, label) {
+  return root.root.findAllByType('button').find(node =>
+    node.props['aria-label'] === label || node.props.children === label)
+}
+
 test('a categorized task paints its title and move-later control on the host icon set', () => {
   const env = setup(categorizedBoard)
   try {
@@ -166,6 +171,10 @@ test('a categorized task paints its title and move-later control on the host ico
     const painted = textOf(root)
     assert.match(painted, /Ship the notes/)
     assert.match(painted, /Move task later/)
+    act(() => button(root, 'Plan, status and due date').props.onClick())
+    assert.ok(button(root, 'Save'))
+    act(() => root.root.findByType('nav').props.onChange('subs'))
+    assert.match(textOf(root), /Move subtask Check the list later/)
     const subs = env.mount(env.SubtaskEditor, {
       task: categorizedBoard.tasks[0],
       reorderSubtask() {}
