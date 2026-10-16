@@ -101,6 +101,18 @@ class HermesTodoBoardToolTests(unittest.TestCase):
         self.assertEqual(by_id[first["id"]]["status"], "open")
         self.assertNotEqual(by_id[first["id"]]["plan"], "now")
 
+    def test_unknown_action_is_named(self) -> None:
+        missing = self._call(action="bogus")
+        self.assertFalse(missing["ok"])
+        self.assertEqual(missing["error"], "invalid_request")
+        self.assertEqual(missing["message"], "Unknown action: bogus")
+
+        supplied = self._call(action="bogus", task_id="task-1")
+        self.assertEqual(supplied["message"], "Unknown action: bogus")
+
+        update = self._call(action="update")
+        self.assertEqual(update["message"], "update requires task_id")
+
 
 if __name__ == "__main__":
     unittest.main()
