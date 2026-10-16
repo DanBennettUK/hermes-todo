@@ -97,6 +97,27 @@ class HermesTodoApiContractTests(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     model(**payload)
 
+    def test_unknown_field_is_422_and_huge_position_is_400(self) -> None:
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from dashboard.plugin_api import router
+
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+        unknown = client.post("/tasks", json={"title": "Nope", "notAField": 1})
+        self.assertEqual(unknown.status_code, 422)
+        huge = client.post("/tasks", json={"title": "Huge", "position": 1e308})
+        self.assertEqual(huge.status_code, 400)
+        edge = client.post(
+            "/tasks",
+            json={"title": "Edge", "position": 1e15},
+            params={"envelope": "result"},
+        )
+        self.assertEqual(edge.status_code, 200)
+        self.assertEqual(edge.json()["task"]["position"], 1e15)
+
     def test_create_patch_search_agenda_and_history_contracts(self) -> None:
         created = add_task(
             TaskCreate(

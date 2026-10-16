@@ -17,6 +17,8 @@ import hermes_todo_store as store
 from hermes_todo_store import (
     BoardError,
     MAX_SOURCE_PAYLOAD_BYTES,
+    POSITION_MAX,
+    POSITION_MIN,
     RevisionConflict,
     complete_task_session,
     complete_with_follow_up,
@@ -866,6 +868,40 @@ class HermesTodoStoreTests(unittest.TestCase):
         created = create_task("Positionable", return_board=False)
         updated = update_task(created["task"]["id"], {"position": 7}, return_board=False)
         self.assertEqual(updated["task"]["position"], 7.0)
+
+    def test_position_stays_inside_the_ordering_range(self) -> None:
+        created = create_task("Bounded", position=POSITION_MAX, return_board=False)
+        self.assertEqual(created["task"]["position"], POSITION_MAX)
+        low = create_task("Low bound", position=POSITION_MIN, return_board=False)
+        self.assertEqual(low["task"]["position"], POSITION_MIN)
+
+        with self.assertRaisesRegex(BoardError, "Position must be between"):
+            create_task("Too high", position=1e308)
+        with self.assertRaisesRegex(BoardError, "Position must be between"):
+            update_task(created["task"]["id"], {"position": POSITION_MAX + 1})
+        with self.assertRaisesRegex(BoardError, "Position must be between"):
+            import_tasks([{"title": "Imported huge", "position": 1e308}])
+
+        current = {
+            task["id"]: task for task in get_board()["tasks"]
+        }
+        self.assertEqual(current[created["task"]["id"]]["position"], POSITION_MAX)
+        self.assertNotIn("Imported huge", {task["title"] for task in current.values()})
+
+        conn = sqlite3.connect(resolve_db_path())
+        conn.execute(
+            "UPDATE tasks SET position = ? WHERE id = ?",
+            (1e308, created["task"]["id"]),
+        )
+        conn.commit()
+        conn.close()
+        retitled = update_task(
+            created["task"]["id"],
+            {"title": "Still editable"},
+            return_board=False,
+        )
+        self.assertEqual(retitled["task"]["title"], "Still editable")
+        self.assertEqual(retitled["task"]["position"], 1e308)
 
     def test_reorder_rebalances_when_midpoint_saturates(self) -> None:
         first = create_task("First", return_board=False)["task"]

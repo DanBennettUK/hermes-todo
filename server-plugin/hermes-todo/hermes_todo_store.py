@@ -1,8 +1,8 @@
 """Durable profile-scoped store for Hermes Todo.
 
-Plan, workflow status, and deadline remain independent. SQLite is the shared
-authority for Desktop, CLI, and optional JSON imports. Schema migrations are
-automatic and additive for v3 boards.
+Category, plan, workflow status, and deadline remain independent. SQLite is
+the shared authority for Desktop, CLI, and optional JSON imports. Schema
+migrations run automatically through schema v7.
 """
 
 from __future__ import annotations
@@ -431,6 +431,10 @@ def _clean_position(value: Any, field: str = "Position") -> float:
     position = float(value)
     if not math.isfinite(position):
         raise BoardError(f"{field} must be a finite number")
+    if position < POSITION_MIN or position > POSITION_MAX:
+        raise BoardError(
+            f"{field} must be between {POSITION_MIN:g} and {POSITION_MAX:g}"
+        )
     return position
 
 
