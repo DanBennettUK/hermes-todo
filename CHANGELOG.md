@@ -5,6 +5,16 @@ All notable changes to Hermes Todo are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - Unreleased
+
+### Fixed
+
+- The Todo pane crashed on a category row because the move-later control rendered `icons.ArrowDown`, and the Hermes Desktop icon set has no `ArrowDown` export. The control now uses `ArrowBarToDown`. React reported the crash as error 130, with an undefined element type.
+
+### Added
+
+- `HERMES_TODO_PROFILE` selects the Hermes profile for the store, the `hermes todo` command, the `todo_board` tool, and the Desktop pane. Leave it unset to keep using the active Hermes home. See the README section "Pin Todo to one Hermes profile".
+
 ## [0.2.0] - 2026-10-16
 
 ### Added

@@ -25,7 +25,7 @@ const HOST_ICONS = [
   'X'
 ]
 
-function setup(board) {
+function setup(board, hostProfile = 'work') {
   const old = { setTimeout, clearTimeout, window: global.window, document: global.document }
   global.window = {
     addEventListener() {},
@@ -56,7 +56,7 @@ function setup(board) {
   }
   const host = {
     state: {
-      profile: { get: () => 'work' },
+      profile: { get: () => hostProfile },
       gateway: { get: () => 'open' },
       activeSessionId: { get: () => 'session-1' },
       cwd: { get: () => '' },
@@ -64,6 +64,8 @@ function setup(board) {
     },
     notify() {},
     notifyError() {},
+    navigate() {},
+    request: async () => ({}),
     openWorkspace(id, options) {
       return () => options.onClose?.()
     }
@@ -110,6 +112,7 @@ function setup(board) {
   return {
     ...loaded,
     ctx,
+    host,
     mount(component, props) {
       let root
       act(() => { root = create(jsx(component, props)) })
@@ -159,9 +162,17 @@ test('an empty board still paints the Todo pane', () => {
   }
 })
 
+function containsText(value, label, seen = new Set()) {
+  if (typeof value === 'string' || typeof value === 'number') return String(value).includes(label)
+  if (!value || typeof value !== 'object' || seen.has(value)) return false
+  seen.add(value)
+  if (Array.isArray(value)) return value.some(item => containsText(item, label, seen))
+  return containsText(value.props && value.props.children, label, seen)
+}
+
 function button(root, label) {
   return root.root.findAllByType('button').find(node =>
-    node.props['aria-label'] === label || node.props.children === label)
+    node.props['aria-label'] === label || containsText(node.props.children, label))
 }
 
 test('a categorized task paints its title and move-later control on the host icon set', () => {
@@ -171,6 +182,7 @@ test('a categorized task paints its title and move-later control on the host ico
     const painted = textOf(root)
     assert.match(painted, /Ship the notes/)
     assert.match(painted, /Move task later/)
+    assert.match(painted, /"v0\.2\.0 · Shared with Hermes"/)
     act(() => button(root, 'Plan, status and due date').props.onClick())
     assert.ok(button(root, 'Save'))
     act(() => root.root.findByType('nav').props.onChange('subs'))
@@ -180,6 +192,58 @@ test('a categorized task paints its title and move-later control on the host ico
       reorderSubtask() {}
     })
     assert.match(textOf(subs), /Move subtask Check the list later/)
+  } finally {
+    env.cleanup()
+  }
+})
+
+test('the pane shows and starts Hermes on the profile named by the board', async () => {
+  const board = {
+    ...categorizedBoard,
+    tasks: categorizedBoard.tasks.map(task => ({ ...task, subtasks: [] })),
+    todoProfile: 'work'
+  }
+  const env = setup(board, 'field')
+  const calls = []
+  env.host.request = async (method, params) => {
+    calls.push({ method, params })
+    if (method === 'session.create') return { session_id: 'runtime-1', stored_session_id: 'stored-1' }
+    return {}
+  }
+  env.ctx.rest = async () => ({
+    revision: 4,
+    task: { ...board.tasks[0], sessionId: 'stored-1', sessionState: 'active' }
+  })
+  try {
+    const root = env.mount(env.TodoPane, { ctx: env.ctx })
+    assert.match(textOf(root), /v0\.2\.0 · Shared with Hermes · work/)
+    await act(async () => { button(root, 'Work with Hermes').props.onClick() })
+    for (let i = 0; i < 5; i += 1) await act(async () => { await Promise.resolve() })
+    const created = calls.find(call => call.method === 'session.create')
+    assert.equal(created.params.profile, 'work')
+  } finally {
+    env.cleanup()
+  }
+})
+
+test('a board profile that is not a profile id leaves the desktop profile in place', async () => {
+  const board = { ...categorizedBoard, todoProfile: '../nope' }
+  const env = setup(board, 'field')
+  const calls = []
+  env.host.request = async (method, params) => {
+    calls.push({ method, params })
+    if (method === 'session.create') return { session_id: 'runtime-1', stored_session_id: 'stored-1' }
+    return {}
+  }
+  env.ctx.rest = async () => ({ revision: 4, task: { ...board.tasks[0], sessionId: 'stored-1', sessionState: 'active' } })
+  try {
+    const root = env.mount(env.TodoPane, { ctx: env.ctx })
+    assert.match(textOf(root), /"v0\.2\.0 · Shared with Hermes"/)
+    assert.doesNotMatch(textOf(root), /nope/)
+    await act(async () => { button(root, 'Work with Hermes').props.onClick() })
+    for (let i = 0; i < 5; i += 1) await act(async () => { await Promise.resolve() })
+    const created = calls.find(call => call.method === 'session.create')
+    assert.equal(created.params.profile, 'field')
   } finally {
     env.cleanup()
   }

@@ -12,8 +12,10 @@ class OrderingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.home = tempfile.TemporaryDirectory()
         self.previous_home = os.environ.get("HERMES_HOME")
+        self.previous_todo_profile = os.environ.get("HERMES_TODO_PROFILE")
         self.previous_resolver = store._get_hermes_home
         os.environ["HERMES_HOME"] = self.home.name
+        os.environ.pop("HERMES_TODO_PROFILE", None)
         store._get_hermes_home = None
         self.tasks = [store.create_task(title, return_board=False)["task"] for title in "ABCD"]
 
@@ -23,6 +25,10 @@ class OrderingTests(unittest.TestCase):
             os.environ.pop("HERMES_HOME", None)
         else:
             os.environ["HERMES_HOME"] = self.previous_home
+        if self.previous_todo_profile is None:
+            os.environ.pop("HERMES_TODO_PROFILE", None)
+        else:
+            os.environ["HERMES_TODO_PROFILE"] = self.previous_todo_profile
         gc.collect()
         self.home.cleanup()
 

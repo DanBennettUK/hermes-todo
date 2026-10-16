@@ -48,6 +48,7 @@ MAX_SUBTASK_TITLE = 500
 SUBTASK_POSITION_STEP = 1024.0
 SCHEMA_VERSION = 7
 _UNSET = object()
+_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 class BoardError(ValueError):
@@ -69,12 +70,48 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def resolve_hermes_home() -> Path:
-    """Resolve the active profile home, with a standalone source-tree fallback."""
+def _configured_hermes_home() -> Path:
     if _get_hermes_home is not None:
         return Path(_get_hermes_home()).expanduser()
     configured = os.environ.get("HERMES_HOME")
     return Path(configured).expanduser() if configured else Path.home() / ".hermes"
+
+
+def _hermes_root(home: Path) -> Path:
+    if home.parent.name == "profiles":
+        return home.parent.parent
+    return home
+
+
+def todo_profile_name() -> str:
+    """Profile id from HERMES_TODO_PROFILE, or '' when that variable is unset."""
+    requested = os.environ.get("HERMES_TODO_PROFILE", "").strip()
+    if not requested:
+        return ""
+    if requested.casefold() == "default":
+        return "default"
+    return requested.lower()
+
+
+def resolve_hermes_home() -> Path:
+    """Return the Hermes home whose todo database this process should open."""
+    active = _configured_hermes_home()
+    name = todo_profile_name()
+    if not name:
+        return active
+    root = _hermes_root(active)
+    if name == "default":
+        return root
+    if not _PROFILE_ID_RE.fullmatch(name):
+        requested = os.environ.get("HERMES_TODO_PROFILE", "").strip()
+        raise BoardError(
+            f"{requested!r} is not a Hermes profile name. "
+            "Use letters, numbers, '-' or '_', starting with a letter or number, up to 64 characters."
+        )
+    profile_dir = root / "profiles" / name
+    if not profile_dir.is_dir():
+        raise BoardError(f"Hermes profile {name!r} was not found at {profile_dir}.")
+    return profile_dir
 
 
 def resolve_db_path() -> Path:
@@ -833,7 +870,11 @@ def _return_mutation(
 
 def get_board() -> dict[str, Any]:
     with closing(_connect()) as conn:
-        return _read_board(conn)
+        board = _read_board(conn)
+    name = todo_profile_name()
+    if name:
+        board["todoProfile"] = name
+    return board
 
 
 def get_task(task_id: str) -> dict[str, Any]:

@@ -24,6 +24,8 @@ Install and enable the matching server plugin in the same profile first. Then:
    and starts a fresh process that mounts the Python API routes;
 4. require **Shared with Hermes** and a matching profile-explicit CLI count.
 
+To keep this pane on one profile while Desktop is connected to another, set `HERMES_TODO_PROFILE` for the Hermes process that serves the pane, then choose **Save and Reconnect**. The footer shows that profile id after **Shared with Hermes**. Leave the variable unset to keep the active profile. The repository README has the id rules.
+
 Reloading Desktop plugins only reloads this JavaScript file. Restarting the
 messaging gateway is unrelated and does not activate Todo's Desktop API.
 

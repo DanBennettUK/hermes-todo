@@ -194,6 +194,30 @@ hermes --profile "$PROFILE" todo list | python3 -c \
   'import json,sys; d=json.load(sys.stdin); print({"tasks": len(d["tasks"]), "revision": d["revision"]})'
 ```
 
+## Pin Todo to one Hermes profile
+
+Set `HERMES_TODO_PROFILE` when the Todo board should stay on one profile while the Hermes process is using another. Leave the variable unset, or set it to spaces only, to keep the previous behavior. Todo then uses the active Hermes home. When Hermes provides a home resolver, that resolver is the active home. Otherwise Todo uses `HERMES_HOME`, or `~/.hermes` when `HERMES_HOME` is also unset.
+
+The value is a profile id. `default` is the Hermes root, the same directory `hermes --profile default` uses. Any other id is the directory `profiles/<id>` inside that root. Write the id in lowercase. `Work` and `work` select the same profile. The id starts with a letter or a number, contains only letters, numbers, `-`, and `_`, and is at most 64 characters.
+
+The named profile directory must already exist. Todo does not create a profile.
+
+The server plugin, the `hermes todo` command, and the `todo_board` tool open that profile's `hermes-todo/todo.sqlite3`. The Desktop pane reads and writes the same database through the profile backend it is connected to. Board responses include `todoProfile`. The pane footer shows that id after **Shared with Hermes**, and **Work with Hermes** starts the session on that profile. A missing profile or an invalid id returns an error and does not create a directory.
+
+Set the variable on the Hermes process that serves the Desktop profile. Then choose **Save and Reconnect** so that process starts again. Reloading the renderer does not read a new value.
+
+```bash
+export HERMES_TODO_PROFILE=work
+hermes todo list
+```
+
+Windows PowerShell
+
+```powershell
+$env:HERMES_TODO_PROFILE = "work"
+hermes todo list
+```
+
 ## Upgrade
 
 Stop Hermes Desktop before you copy the database, so no process has it open.
@@ -381,7 +405,7 @@ Dedicated operations link or idempotently complete a work session, idempotently 
 
 ## Agent tool
 
-The server plugin registers `todo_board` on the `hermes-todo` toolset. The actions are `list`, `get`, `create`, `update`, `reorder`, `start`, `done`, `subtask_create`, `subtask_update`, `subtask_delete`, `subtask_reorder`, and `subtask_sort`.
+The server plugin registers `todo_board` on the `hermes-todo` toolset. The tool uses the same profile as the store. Set `HERMES_TODO_PROFILE` to pin that profile. See [Pin Todo to one Hermes profile](#pin-todo-to-one-hermes-profile). The actions are `list`, `get`, `create`, `update`, `reorder`, `start`, `done`, `subtask_create`, `subtask_update`, `subtask_delete`, `subtask_reorder`, and `subtask_sort`.
 
 There is no parent-task delete action. The tool can delete a subtask. An action outside the list returns JSON with `"ok": false`, `"error": "invalid_request"`, and `"message": "Unknown action: ..."`. A known action that needs a task id, and is called without one, still says that the action requires `task_id`.
 

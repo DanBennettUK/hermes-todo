@@ -23,8 +23,10 @@ class SubtaskOrderingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.previous_home = os.environ.get("HERMES_HOME")
+        self.previous_todo_profile = os.environ.get("HERMES_TODO_PROFILE")
         self.previous_resolver = store._get_hermes_home
         os.environ["HERMES_HOME"] = self.tmp.name
+        os.environ.pop("HERMES_TODO_PROFILE", None)
         store._get_hermes_home = None
         self.task = create_task("Parent", return_board=False)["task"]
         self.items = [
@@ -38,6 +40,10 @@ class SubtaskOrderingTests(unittest.TestCase):
             os.environ.pop("HERMES_HOME", None)
         else:
             os.environ["HERMES_HOME"] = self.previous_home
+        if self.previous_todo_profile is None:
+            os.environ.pop("HERMES_TODO_PROFILE", None)
+        else:
+            os.environ["HERMES_TODO_PROFILE"] = self.previous_todo_profile
         self.tmp.cleanup()
 
     def positions(self):
