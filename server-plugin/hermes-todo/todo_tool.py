@@ -1,8 +1,7 @@
-"""Agent tool for the shared Hermes Todo board.
+"""todo_board agent tool for the shared Hermes Todo board.
 
-Exposes create/update/reorder/list/get (no delete) so the AI can run the
-board without being able to destroy tasks. All actions call the store
-directly and return compact JSON.
+The published actions read and write tasks and subtasks. Parent-task delete
+is not an action. Each call returns compact JSON.
 """
 
 from __future__ import annotations

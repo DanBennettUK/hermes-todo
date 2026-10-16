@@ -1,8 +1,8 @@
 """Durable profile-scoped store for Hermes Todo.
 
-Plan, workflow status, and deadline remain independent. SQLite is the shared
-authority for Desktop, CLI, and optional JSON imports. Schema migrations are
-automatic and additive for v3 boards.
+Category, plan, workflow status, and deadline remain independent. SQLite is
+the shared authority for Desktop, CLI, and optional JSON imports. Schema
+migrations run automatically through schema v7.
 """
 
 from __future__ import annotations

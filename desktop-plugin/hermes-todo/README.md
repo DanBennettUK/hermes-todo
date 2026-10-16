@@ -33,8 +33,12 @@ troubleshooting, and rollback instructions.
 
 In v0.2 the capture field always creates an Inbox task. It never fills an empty
 Now slot automatically. Use **Start now** or **Work with Hermes** on an open
-task to make that explicit. The pane has one Board view; use P1-P4 priority,
-Now/Today/Later planning, and due dates to make attention explicit. Linked
+task to make that explicit. The pane has one Board view. Category buckets are
+**Today**, **Tomorrow**, **This Week**, **This Month**, and **Soon**, and you
+can drag a card between them. Plan is still **Now**, **Today**, or **Later**,
+with at most one open Now task. The task editor is tabbed and saves as you
+edit. Completion asks for a second click. **Show Todo** in the command palette
+opens the pane. Linked
 active Hermes sessions show a resume action and task detail exposes the durable brief,
 closure evidence, recurrence identity, and append-only local history. If a
 link request times out after the server committed it, task detail also offers

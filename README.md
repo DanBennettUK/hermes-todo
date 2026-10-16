@@ -1,21 +1,25 @@
 # Hermes Todo
 
-A compact, shared task board for Hermes Desktop and Hermes agents. **Todo** keeps planning position, workflow status, and deadlines independent while using one profile-scoped SQLite database.
+A compact, shared task board for Hermes Desktop and Hermes agents. **Todo** keeps category, plan, workflow status, and deadlines independent while using one profile-scoped SQLite database.
 
 For positional reorder requests, `afterId` and `beforeId` identify the immediate neighbours of the destination gap, with the moving task excluded. When both are supplied, they must be distinct, in the target category, and adjacent in that order. Invalid gaps are rejected without changing the board revision or task history. Single-neighbour requests place the task immediately before or after that neighbour. Use `expectedRevision` to detect concurrent board changes; it does not replace neighbour validation.
 
 ## Features
 
-- Planning: **Now**, **Today**, **Later** (with one open Now task)
-- Status: **Open**, **Waiting**, **Blocked**, **Done**
-- Inbox capture that never claims **Now** without an explicit **Start now** action
-- Durable brief, next action, closure condition, waiting/blocking context, review date, owner, approval, and bounded artefact/evidence fields
-- One Board view with explicit Now/Today/Later planning, due-date grouping, and P1-P4 priority
-- Append-only machine-readable task history and truthful closure notes/evidence
-- **Work with Hermes** persists the linked stored-session ID and resumes it instead of creating a duplicate
-- All-day or timed due dates, 5–480 minute estimates, projects, priorities P1–P4, legacy recurrence notes, and deterministic recurrence occurrences
-- Agent-writable `hermes todo` CLI and namespaced REST backend with task reads, search, agenda, backward-compatible board mutation envelopes, compact opt-in results, and revision conflicts
-- Optional one-time import from plugin-local legacy board storage or a JSON file
+- Categories: **Today**, **Tomorrow**, **This Week**, **This Month**, and **Soon**. Drag a card from one bucket to another in the Todo pane.
+- Plan: **Now**, **Today**, and **Later**, with at most one open Now task. Plan is separate from the category bucket.
+- Status: **Open**, **Waiting**, **Blocked**, and **Done**. Completion in the pane asks for a second click.
+- Subtask checklists on a parent task, stored with the task and edited from the desktop **Subs** tab.
+- Inbox capture that never claims **Now** without an explicit **Start now** action.
+- Durable brief, next action, closure condition, waiting/blocking context, review date, owner, approval, and bounded artefact/evidence fields.
+- One Board view with category buckets, plan, due-date grouping, and P1 to P4 priority pills.
+- A tabbed task editor (**Work**, **Plan**, **Wait**, **Subs**, **More**) that saves while you edit.
+- **Show Todo** in the command palette opens the pane.
+- Append-only machine-readable task history and truthful closure notes/evidence.
+- **Work with Hermes** persists the linked stored-session ID and resumes it instead of creating a duplicate.
+- All-day or timed due dates, 5 to 480 minute estimates, projects, priorities P1 to P4, legacy recurrence notes, and deterministic recurrence occurrences.
+- Agent-writable `hermes todo` CLI, namespaced REST backend, and `todo_board` agent tool. Reads include search, agenda, and history. Mutations return the full board by default, or a compact result when you ask for one. A stale revision is a conflict.
+- Optional one-time import from plugin-local legacy board storage or a JSON file.
 
 ### Work-session re-entry contract
 
@@ -40,11 +44,15 @@ the session still receives the useful handover.
 desktop-plugin/hermes-todo/plugin.js       Desktop plugin (plain ESM)
 
 server-plugin/hermes-todo/                  Standalone Hermes server plugin
+  __init__.py                               CLI and todo_board registration
   dashboard/plugin_api.py                   Namespaced FastAPI router
   dashboard/manifest.json
   hermes_todo_store.py                      SQLite authority
   cli.py                                    CLI implementation
-tests/                                      stdlib unittest suite
+  todo_tool.py                              todo_board agent tool
+tests/                                      Python unittest suite
+tests/desktop/                              Desktop lifecycle tests
+scripts/build_release_zips.py              Release archive builder
 ARCHITECTURE.md                             architecture and privacy boundary
 ```
 
@@ -54,16 +62,16 @@ Hermes Todo has two independently installed components. Install the server
 plugin first, then the Desktop plugin, into one explicitly selected Hermes
 profile. Do not rely on Hermes' sticky active profile.
 
-The manifests in this source tree identify the v0.2.0 product slice. The
-versioned download examples below intentionally remain on the last published
-v0.1.2 release; do not substitute an unpublished v0.2.0 archive or checksum.
+The manifests in this source tree are version 0.2.0. The versioned commands
+below use the v0.2.0 release archives. The GitHub subdirectory installer
+still copies the repository's default branch, not that tag.
 
 ### Quick install with your agent
 
 If your agent can install Hermes plugins, tell it:
 
 ```text
-Install Hermes Todo v0.1.2 from https://github.com/DanBennettUK/hermes-todo/releases/tag/v0.1.2 into the `default` Hermes profile. Use the release bundle, install both the server and Desktop components, and verify that the Todo pane reports Shared with Hermes.
+Install Hermes Todo v0.2.0 from https://github.com/DanBennettUK/hermes-todo/releases/tag/v0.2.0 into the `default` Hermes profile. Use the release bundle, install both the server and Desktop components, and verify that the Todo pane reports Shared with Hermes.
 ```
 
 Replace `default` with the name of your selected Hermes profile when needed.
@@ -109,21 +117,21 @@ SHA-256 checksum instead. The bundle contains both components from one tag.
 
 ### Reproducible release install
 
-Download both `hermes-todo-v0.1.2.zip` and
-`hermes-todo-v0.1.2.zip.sha256` from the release, then verify and unpack them:
+Download both `hermes-todo-v0.2.0.zip` and
+`hermes-todo-v0.2.0.zip.sha256` from the release, then verify and unpack them:
 
 ```bash
-sha256sum -c hermes-todo-v0.1.2.zip.sha256
-python3 -m zipfile -e hermes-todo-v0.1.2.zip .
-BUNDLE_DIR="$PWD/hermes-todo-v0.1.2"
+sha256sum -c hermes-todo-v0.2.0.zip.sha256
+python3 -m zipfile -e hermes-todo-v0.2.0.zip .
+BUNDLE_DIR="$PWD/hermes-todo-v0.2.0"
 ```
 
-On Windows, compare `Get-FileHash hermes-todo-v0.1.2.zip -Algorithm SHA256`
+On Windows, compare `Get-FileHash hermes-todo-v0.2.0.zip -Algorithm SHA256`
 with the published `.sha256` value, then install with:
 
 ```powershell
-Expand-Archive -Path hermes-todo-v0.1.2.zip -DestinationPath .
-$BundleDir = Join-Path $PWD "hermes-todo-v0.1.2"
+Expand-Archive -Path hermes-todo-v0.2.0.zip -DestinationPath .
+$BundleDir = Join-Path $PWD "hermes-todo-v0.2.0"
 New-Item -ItemType Directory -Force (Join-Path $ProfileHome "plugins")
 New-Item -ItemType Directory -Force (Join-Path $ProfileHome "desktop-plugins")
 Copy-Item -Recurse (Join-Path $BundleDir "server-plugin/hermes-todo") `
@@ -188,15 +196,42 @@ hermes --profile "$PROFILE" todo list | python3 -c \
 
 ## Upgrade
 
-Before an upgrade, preserve an executable copy of both installed components.
-The data directory is separate and must not be copied, moved, or deleted:
+Stop Hermes Desktop before you copy the database, so no process has it open.
+v0.2.0 migrates a v0.1.2 database from schema v3 to schema v7 the first time
+it opens the file. The migration keeps existing tasks. When the plan is Later,
+the category becomes Soon, and the plan value stays Later. Positions are
+assigned. There is no downgrade. Restoring the previous plugin code does not
+restore the previous database. Copy the backup back over `todo.sqlite3` if
+you need the old data.
+
+Back up the database first, then the installed code. Leave the live data
+directory where it is. Do not move or delete it as part of the upgrade.
 
 ```bash
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-BACKUP_DIR="$PROFILE_HOME/backups/hermes-todo-code-$STAMP"
+BACKUP_DIR="$PROFILE_HOME/backups/hermes-todo-$STAMP"
 mkdir -p "$BACKUP_DIR"
+cp -a "$PROFILE_HOME/hermes-todo/todo.sqlite3" "$BACKUP_DIR/todo.sqlite3"
+for extra in -wal -shm; do
+  if [ -f "$PROFILE_HOME/hermes-todo/todo.sqlite3$extra" ]; then
+    cp -a "$PROFILE_HOME/hermes-todo/todo.sqlite3$extra" "$BACKUP_DIR/"
+  fi
+done
 cp -a "$PROFILE_HOME/plugins/hermes-todo" "$BACKUP_DIR/server"
 cp -a "$PROFILE_HOME/desktop-plugins/hermes-todo" "$BACKUP_DIR/desktop"
+```
+
+PowerShell equivalent for the database files:
+
+```powershell
+$Stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
+$BackupDir = Join-Path $ProfileHome "backups/hermes-todo-$Stamp"
+New-Item -ItemType Directory -Force $BackupDir | Out-Null
+Copy-Item (Join-Path $ProfileHome "hermes-todo/todo.sqlite3") $BackupDir
+foreach ($suffix in @("-wal", "-shm")) {
+  $extra = Join-Path $ProfileHome "hermes-todo/todo.sqlite3$suffix"
+  if (Test-Path $extra) { Copy-Item $extra $BackupDir }
+}
 ```
 
 For the mutable convenience path, disable the plugin, replace the copied server
@@ -266,6 +301,12 @@ hermes --profile "$PROFILE" plugins disable hermes-todo
 Do not delete `$PROFILE_HOME/hermes-todo/todo.sqlite3`. Plugin code and data are
 separate, so the board remains available for re-enabling or diagnosis.
 
+If v0.2.0 has already migrated the database, restoring the old code leaves
+schema v7 in place. To get the pre-upgrade data back, stop Hermes Desktop and
+copy `$BACKUP_DIR/todo.sqlite3` over the live file. Copy the `-wal` and `-shm`
+sidecars from the same backup when you saved them, or delete any live sidecars
+left from the migrated file so SQLite does not replay them.
+
 To roll back, restore the exact pre-upgrade code snapshot while retaining the
 failed version for diagnosis:
 
@@ -307,7 +348,10 @@ hermes --profile "$PROFILE" todo update TASK_ID --next-action "Run the focused s
 hermes --profile "$PROFILE" todo session-link TASK_ID STORED_SESSION_ID --expected-revision REVISION
 hermes --profile "$PROFILE" todo follow-up TASK_ID "Check response" --status waiting --waiting-on Reviewer
 hermes --profile "$PROFILE" todo import ./tasks.json
+hermes --profile "$PROFILE" todo reorder TASK_ID --category soon --after OTHER_TASK_ID
 ```
+
+`todo reorder` places a task in a category. `--before` and `--after` name the immediate neighbours, with the moving task excluded. Category commands `tomorrow`, `this-week`, `this-month`, and `soon` move an open task into that bucket. `later` sets the plan to Later and the category to Soon.
 
 Read commands and mutation commands emit explicit JSON objects. Mutations default to the backward-compatible full-board envelope with `tasks` and the new `revision`; recurrence and follow-up operations also retain their `generatedTask` or `followUpTask` metadata. Pass `--compact` for a result containing the changed `task` and any `affectedTasks`, `generatedTask`, or `followUpTask`. The existing `--board` spelling remains available as an explicit request for the default board envelope. Pass `--expected-revision` to protect a read/modify/write sequence; a stale write exits with code 3 and an `error: "revision_conflict"` object without changing the board.
 
@@ -321,17 +365,27 @@ The free-text `recurrence` field remains a display note and is never treated as 
 - `weekdays`
 - `weekly`
 - `monthly` (the day is clamped to the destination month's last day)
-- `every:<n>d`, where `n` is 1–365, for example `every:14d`
+- `every:<n>d`, where `n` is 1 to 365, for example `every:14d`
 
 An executable rule requires `dueDate` or `dueAt`. `recurrenceTimezone` is an IANA timezone and defaults to the timed due timezone or UTC. Completing an occurrence preserves it as Done and idempotently creates the next occurrence with one stable `seriesId` and a unique `occurrenceId` such as `<seriesId>:2`. Imports that provide recurrence identity must provide `seriesId`, `occurrenceId`, and `occurrenceNumber` together, with `occurrenceId` exactly `<seriesId>:<occurrenceNumber>`; when none are supplied, an executable recurrence rule creates the initial identity.
 
 ### REST contract
 
-The namespaced API exposes `GET /board`, `GET /tasks`, `GET /tasks/{id}`, `GET /tasks/{id}/history`, and `GET /agenda`. Mutations default to the backward-compatible full-board envelope. Add `?envelope=result` to opt into the compact mutation result; `?envelope=board` remains a compatible explicit board request. Mutation bodies accept `expectedRevision`; delete accepts it as a query parameter. Conflicts return HTTP 409 with `expectedRevision` and `currentRevision`.
+The namespaced API exposes `GET /board`, `GET /tasks`, `GET /tasks/{id}`, `GET /tasks/{id}/history`, and `GET /agenda`. Mutations include `POST /tasks/{id}/reorder` and the subtask routes under `/tasks/{id}/subtasks` (create, patch, delete, reorder, and sort). Mutations default to the backward-compatible full-board envelope. Add `?envelope=result` to opt into the compact mutation result. `?envelope=board` remains a compatible explicit board request. Mutation bodies accept `expectedRevision`. Delete accepts it as a query parameter. Conflicts return HTTP 409 with `expectedRevision` and `currentRevision`.
+
+Request bodies use strict models. A field the model does not declare returns HTTP 422. A task `position` outside -1e15 through 1e15 returns HTTP 400, and the board is unchanged.
 
 Agenda conversion interprets a naive `dueAt` in the task's `dueTimezone` before converting it to the requested agenda timezone; invalid legacy timezone metadata safely falls back to the agenda timezone. A waiting task receives the `waiting_review` reason only when its `reviewDate` is today or overdue.
 
-Dedicated operations link or idempotently complete a work session, idempotently generate the next recurrence, and atomically complete a task with a follow-up. Omitting closure fields from complete-with-follow-up preserves existing closure data; explicit null or empty values clear it. They remain local Todo state changes: a closure note or evidence path does not claim that an external delivery was verified.
+Dedicated operations link or idempotently complete a work session, idempotently generate the next recurrence, and atomically complete a task with a follow-up. Omitting closure fields from complete-with-follow-up preserves existing closure data; explicit null or empty values clear it. They remain local Todo state changes. A closure note or evidence path does not claim that an external delivery was verified.
+
+## Agent tool
+
+The server plugin registers `todo_board` on the `hermes-todo` toolset. The actions are `list`, `get`, `create`, `update`, `reorder`, `start`, `done`, `subtask_create`, `subtask_update`, `subtask_delete`, `subtask_reorder`, and `subtask_sort`.
+
+There is no parent-task delete action. The tool can delete a subtask. An action outside the list returns JSON with `"ok": false`, `"error": "invalid_request"`, and `"message": "Unknown action: ..."`. A known action that needs a task id, and is called without one, still says that the action requires `task_id`.
+
+A task `position` passed to create, update, or import must be a finite number from -1e15 through 1e15, including both ends.
 
 ## Security and data retention
 
@@ -369,6 +423,23 @@ Desktop plugin files are uncompiled ESM: no JSX, bundler, or imports beyond the 
 The mounted desktop tests use React 18 with explicit SDK/DOM doubles. They cover completion confirmation, save draining on unmount, revision conflicts, deletion guards and drag cleanup. Workspace close/reopen is tested against an SDK double; a real Hermes host and visual layout are still outside this automated suite.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for storage and privacy details.
+
+## Build the release archives
+
+`scripts/build_release_zips.py` writes the two archives a release uses, plus a SHA-256 sidecar for each. It does not create a tag, a GitHub release, or an upload.
+
+Run it from a clean checkout of the commit you intend to publish. The script packs the working-tree bytes of git-tracked files, so an uncommitted edit would be included. The full archive is `dist/hermes-todo-v0.2.0.zip`. Its top directory is `hermes-todo-v0.2.0/`, and it contains the server plugin, the Desktop plugin, the tests, and these docs. Paths under `.github/` are omitted. The Desktop-only archive is `dist/hermes-todo-desktop-v0.2.0.zip`. It contains `hermes-todo/plugin.js` and `hermes-todo/README.md`.
+
+The version in the file names is the `version` field in `plugin.yaml`. The script stops if that value disagrees with `dashboard/manifest.json`. It also stops if a tracked path is a database, an env file, or a `node_modules` directory.
+
+```bash
+python3 scripts/build_release_zips.py
+cd dist
+sha256sum -c hermes-todo-v0.2.0.zip.sha256
+sha256sum -c hermes-todo-desktop-v0.2.0.zip.sha256
+```
+
+The sidecar names the zip without a directory, so check it from `dist/`. On Windows, compare `Get-FileHash hermes-todo-v0.2.0.zip -Algorithm SHA256` with the hash in the sidecar.
 
 ## Licence
 
